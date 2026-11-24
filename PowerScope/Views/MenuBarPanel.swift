@@ -4,9 +4,16 @@ import SwiftUI
 struct MenuBarPanel: View {
     @Environment(BatteryMonitor.self) private var monitor
     @Environment(\.openWindow) private var openWindow
+    @State private var isVisible = false
+    /// What the panel shows while closed, so it reads nothing live from the monitor.
+    @State private var frozen = BatterySnapshot()
+    @State private var frozenProblems = 0
 
     var body: some View {
-        let s = monitor.snapshot
+        // Reading monitor values only while visible keeps the closed panel from
+        // re-rendering every second.
+        let s = isVisible ? monitor.snapshot : frozen
+        let problems = isVisible ? monitor.problemCount(within: 600) : frozenProblems
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
                 RingGauge(percent: s.percent, tint: s.mode.color, lineWidth: 7, fontSize: 20)
@@ -39,16 +46,22 @@ struct MenuBarPanel: View {
                 }
                 GridRow {
                     stat("PD contract", s.pd.contract.map {
-                        "\(Format.number(Double($0.voltage) / 1000, digits: 2, unit: "V")) \(Format.number($0.current.map { Double($0) / 1000 }, digits: 2, unit: "A"))"
+                        "\(Format.number(Double($0.voltage) / 1000, digits: 2, unit: "V")) \($0.current == nil ? "≤ " : "")\(Format.number($0.displayCurrent.map { Double($0) / 1000 }, digits: 2, unit: "A"))"
                     } ?? "—")
-                    stat("PD link issues, 10 min", "\(monitor.problemCount(within: 600))")
+                    stat("PD link issues, 10 min", "\(problems)")
                 }
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Power, last 30 minutes").font(.caption).foregroundStyle(.secondary)
-                HistoryChart(metric: .power, range: .halfHour, compact: true)
-                    .frame(height: 110)
+                Group {
+                    if isVisible {
+                        HistoryChart(metric: .power, range: .halfHour, compact: true)
+                    } else {
+                        Color.clear
+                    }
+                }
+                .frame(height: 110)
             }
 
             Divider()
@@ -63,6 +76,13 @@ struct MenuBarPanel: View {
         }
         .padding(14)
         .frame(width: 340)
+        .background(WindowVisibilityReader(isVisible: $isVisible))
+        .onChange(of: isVisible) { _, visible in
+            if !visible {
+                frozen = monitor.snapshot
+                frozenProblems = monitor.problemCount(within: 600)
+            }
+        }
     }
 
     private func stat(_ title: String, _ value: String) -> some View {

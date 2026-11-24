@@ -28,6 +28,9 @@ enum Page: String, CaseIterable, Identifiable {
 struct ContentView: View {
     /// `-page charging` on the command line opens a specific page.
     @State private var page: Page? = Page(rawValue: UserDefaults.standard.string(forKey: "page") ?? "") ?? .overview
+    /// SwiftUI keeps this view alive after the window closes; pages are only built
+    /// (and only observe live data) while the window is actually visible.
+    @State private var isVisible = true
 
     var body: some View {
         NavigationSplitView {
@@ -37,16 +40,21 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 220)
         } detail: {
             Group {
-                switch page ?? .overview {
-                case .overview: OverviewPage()
-                case .charging: ChargingPage()
-                case .history: HistoryPage()
-                case .battery: BatteryPage()
-                case .raw: RawDataPage()
+                if isVisible {
+                    switch page ?? .overview {
+                    case .overview: OverviewPage()
+                    case .charging: ChargingPage()
+                    case .history: HistoryPage()
+                    case .battery: BatteryPage()
+                    case .raw: RawDataPage()
+                    }
+                } else {
+                    Color.clear
                 }
             }
             .navigationTitle((page ?? .overview).title)
         }
+        .background(WindowVisibilityReader(isVisible: $isVisible))
     }
 }
 
@@ -204,7 +212,7 @@ struct ChargingPage: View {
             ("Rated power", Format.int(a.watts, unit: "W")),
             ("Rated voltage", Format.number(a.voltage.map { Double($0) / 1000 }, digits: 2, unit: "V")),
             ("Rated current", Format.number(a.current.map { Double($0) / 1000 }, digits: 2, unit: "A")),
-            ("USB-C PD", a.isUSBPD ? "Yes" : "No"),
+            ("USB Power Delivery", a.isUSBPD ? "Yes" : "No"),
             ("Wireless", a.isWireless.map { $0 ? "Yes" : "No" } ?? "—"),
         ]
         if let d = a.description { rows.append(("Description", d)) }
@@ -383,5 +391,7 @@ struct RawDataPage: View {
             TableColumn("Value") { Text($0.value).monospacedDigit().textSelection(.enabled) }
         }
         .searchable(text: $query, prompt: "Search keys or values")
+        .onAppear { monitor.includeRawData = true }
+        .onDisappear { monitor.includeRawData = false }
     }
 }

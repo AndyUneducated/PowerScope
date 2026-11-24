@@ -5,7 +5,8 @@ import IOKit.ps
 /// Reads battery and charger state from the IOKit registry (`AppleSmartBattery` and children)
 /// and from the IOPowerSources API.
 enum BatteryReader {
-    static func read(now: Date = .now) -> BatterySnapshot {
+    /// - Parameter includeRaw: also build the flattened key/value list for the Raw Data page.
+    static func read(now: Date = .now, includeRaw: Bool = false) -> BatterySnapshot {
         var s = BatterySnapshot(date: now)
         let battery = registryProperties(className: "AppleSmartBattery") ?? [:]
         let batteryData = battery["BatteryData"] as? [String: Any] ?? [:]
@@ -120,7 +121,9 @@ enum BatteryReader {
             s.chargeCurrentLimit = int(charger["ChargingCurrent"]).flatMap { $0 > 0 ? $0 : nil }
         }
 
-        s.raw = flatten(battery, prefix: "") + flatten(packData, prefix: "Pack.")
+        if includeRaw {
+            s.raw = flatten(battery, prefix: "") + flatten(packData, prefix: "Pack.")
+        }
         return s
     }
 
@@ -215,7 +218,7 @@ enum BatteryReader {
     }
 
     /// `MfgData` holds length-prefixed ASCII strings such as "3516", "00A", "ATL".
-    private static func lengthPrefixedStrings(_ data: Data) -> [String] {
+    static func lengthPrefixedStrings(_ data: Data) -> [String] {
         let bytes = [UInt8](data)
         var result: [String] = []
         var i = 0
@@ -236,7 +239,7 @@ enum BatteryReader {
 
     /// Apple Silicon stores the manufacture date as packed ASCII; Intel Macs as a
     /// day/month/year bitfield.
-    private static func manufactureDate(_ value: Any?) -> String? {
+    static func manufactureDate(_ value: Any?) -> String? {
         guard let n = int(value), n > 0 else { return nil }
         if n < 0x10000 {
             let day = n & 0x1F, month = (n >> 5) & 0x0F, year = 1980 + (n >> 9)

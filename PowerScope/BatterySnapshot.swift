@@ -39,7 +39,7 @@ struct AdapterInfo {
 
     var typeText: String {
         if isWireless == true { return "Wireless" }
-        if isUSBPD { return "USB-C PD" }
+        if isUSBPD { return "USB PD" }   // USB-C or MagSafe 3; the registry does not say which connector
         return description ?? "Unknown"
     }
 }

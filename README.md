@@ -12,7 +12,8 @@ A native macOS battery and charging monitor (Swift 6, SwiftUI, Swift Charts, Swi
 ## Precision features
 ### Negotiated PD voltage
 - Source capabilities come from the port controller (`PortControllerPortPDO`) and are decoded per USB PD 3.1: Fixed, Battery, Variable, PPS and AVS. SPR objects take positions 1–7 and EPR objects start at position 8.
-- The PDO in use is the power manager's selection (`UsbHvcHvcIndex`, 0-based). The port controller's RDO (`PortControllerActiveContractRdo`) supplies the operating current only when it points to the same PDO; it is not refreshed for every contract (an EPR 28 V contract keeps the last SPR request), so on its own it can be stale. When the RDO does not match, the PDO's current limit is shown instead.
+- `PDContractResolver` decides which PDO is in use, in this order: the power manager's selection (`UsbHvcHvcIndex`, 0-based), then the PDO matching the PMU input setpoint (`IPDInputVoltage`), then the port controller's RDO (`PortControllerActiveContractRdo`). A candidate that contradicts the PMU setpoint is rejected, and a power budget on a port with stale capabilities does not win.
+- The RDO lags: after switching to an EPR 28 V contract it kept the previous 20 V request for a while before updating to PDO 8. It therefore only supplies the operating current when it names the same PDO; until then the PDO's current limit is shown (≤). PPS/AVS voltages come from a matching RDO or the PMU setpoint, never from the PDO maximum.
 - The contract is cross-checked against the RDO, the PMU input setpoint (`IPDInputVoltage`), the measured system input (within 10 % below / 5 % above) and the source macOS elected (`WinningPowerSourceOption`, which can keep a previous charger's value).
 - Port controller counters (attach, hard reset, Source_Capabilities, rejects) are compared every second. Because the firmware keeps counting between samples, every reconnect and renegotiation is logged in the PD timeline even when it happens faster than the polling rate. Repeats within 60 s are folded into one event.
 
@@ -27,6 +28,15 @@ A native macOS battery and charging monitor (Swift 6, SwiftUI, Swift Charts, Swi
 - Charge state is judged by measured battery power, not the `IsCharging` flag, which lags.
 - On AC power with the battery discharging is shown as "Adapter insufficient · battery assisting".
 - Health = FullChargeCapacity ÷ DesignCapacity; nominal health = NominalChargeCapacity ÷ DesignCapacity.
+
+## Performance
+Readings cost under 1 ms per second. SwiftUI keeps closed windows and the menu bar panel alive, so views stop observing live data while their window is not visible, and the Raw Data list is built only while that page is open. Measured on the Release build: about 1.8 % of one core in the background (menu bar only), about 2.8 % with the main window open.
+
+## Tests
+Unit tests (Swift Testing) in `PowerScopeTests/` replay PDOs and RDOs captured from a real Mac: PDO/RDO decoding, EPR positions, contract resolution (stale RDO, 5 V fallback, wrong power budget, AVS, PPS), cross-checks, history downsampling and registry parsing.
+```
+xcodebuild test -project PowerScope.xcodeproj -scheme PowerScope -destination 'platform=macOS'
+```
 
 ## History
 Readings every second, stored per 5-second window (average, min, max), kept for 7 days in `~/Library/Application Support/PowerScope/history.store` together with the PD event log. Periods when the app was not running show as gaps.

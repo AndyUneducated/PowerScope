@@ -86,6 +86,8 @@ struct PDContractCard: View {
             return "\(pdo) on port controller \(port.index). Selected by the power manager and confirmed by the port controller's RDO \(Format.hex(Int(port.rawRDO)))."
         case .powerManager:
             return "\(pdo) on port controller \(port.index), selected by the power manager. The port controller's RDO was not refreshed for this contract, so the operating current is unknown and the PDO limit is shown."
+        case .pmuSetpoint:
+            return "\(pdo) on port controller \(port.index), matched to the PMU input setpoint. The power manager published no selection, so this is inferred from the voltage."
         case .rdoOnly:
             return "\(pdo) on port controller \(port.index), decoded from the RDO \(Format.hex(Int(port.rawRDO))). The power manager publishes no selection to confirm it."
         }

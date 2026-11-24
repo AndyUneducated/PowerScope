@@ -181,7 +181,7 @@ extension BatterySnapshot {
         var line = parts.joined(separator: " ")
         // Prefer the negotiated PD contract over the adapter's rated maximum.
         if let contract = pd.contract {
-            let current = contract.current.map { Format.number(Double($0) / 1000, digits: 2, unit: "A") } ?? ""
+            let current = contract.displayCurrent.map { (contract.current == nil ? "≤ " : "") + Format.number(Double($0) / 1000, digits: 2, unit: "A") } ?? ""
             line += " · negotiated \(Format.number(Double(contract.voltage) / 1000, digits: 2, unit: "V")) \(current)"
         } else if let v = a.voltage, let c = a.current {
             line += " · rated \(Format.number(Double(v) / 1000, digits: 0))V \(Format.number(Double(c) / 1000, digits: 2))A"

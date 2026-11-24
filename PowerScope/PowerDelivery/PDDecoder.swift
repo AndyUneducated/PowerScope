@@ -152,7 +152,9 @@ nonisolated enum ContractBasis: Sendable {
     /// Only the power manager's selection; the RDO points elsewhere (the port
     /// controller does not refresh it for every contract, e.g. EPR).
     case powerManager
-    /// Only the RDO; the power manager published no selection.
+    /// The PMU input setpoint matches this PDO; no power manager selection or RDO confirms it.
+    case pmuSetpoint
+    /// Only the RDO; nothing else is published to confirm it.
     case rdoOnly
 }
 
@@ -162,11 +164,14 @@ nonisolated struct PDContract: Hashable, Sendable {
     /// The RDO, only when it references this PDO.
     let rdo: DecodedRDO?
     var basis: ContractBasis = .rdoOnly
+    /// For PPS/AVS supplies: the requested voltage when no matching RDO carries it
+    /// (taken from the PMU setpoint).
+    var programmedVoltage: Int? = nil
 
     /// Negotiated bus voltage in mV: the PDO voltage for fixed supplies,
     /// the requested voltage for programmable ones.
     var voltage: Int {
-        if pdo.kind.isProgrammable, let v = rdo?.requestedVoltage { return v }
+        if pdo.kind.isProgrammable { return rdo?.requestedVoltage ?? programmedVoltage ?? pdo.maxVoltage }
         return pdo.maxVoltage
     }
 

@@ -40,6 +40,10 @@ final class BatteryMonitor {
     @ObservationIgnored private var notificationPort: IONotificationPortRef?
     @ObservationIgnored private var interestNotifier: io_object_t = 0
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    /// Set while the Raw Data page is open; building that list every second is wasted otherwise.
+    @ObservationIgnored var includeRawData = false {
+        didSet { if includeRawData { lastReadDate = .distantPast; tick() } }
+    }
 
     init() {
         container = Self.makeContainer()
@@ -74,7 +78,7 @@ final class BatteryMonitor {
         let now = Date.now
         guard now.timeIntervalSince(lastReadDate) >= 0.3 else { return }
         lastReadDate = now
-        snapshot = BatteryReader.read(now: now)
+        snapshot = BatteryReader.read(now: now, includeRaw: includeRawData)
         appendLive(snapshot)
         trackPowerDelivery(snapshot)
 
@@ -159,7 +163,7 @@ final class BatteryMonitor {
             log(.established, port: activeIndex, count: 1, detail: describe(new), contract: new, at: s.date)
         case (_?, nil):
             log(.lost, port: activeIndex, count: 1, detail: "No PD profile in use", contract: nil, at: s.date)
-        case (let old?, let new?) where old.voltage != new.voltage || old.pdo != new.pdo || old.current != new.current:
+        case (let old?, let new?) where old.voltage != new.voltage || old.pdo != new.pdo:
             log(.changed, port: activeIndex, count: 1, detail: "\(describe(old)) → \(describe(new))", contract: new, at: s.date)
         default:
             break

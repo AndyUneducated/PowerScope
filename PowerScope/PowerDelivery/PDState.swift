@@ -68,24 +68,21 @@ struct PDState {
     var selectedIndex: Int?
     /// Whether the system publishes `UsbHvcHvcIndex` at all.
     var reportsSelection = false
+    /// The PMU's configured input voltage in mV (`IPDInputVoltage`); 5000 means the 5 V fallback.
+    var pmuVoltage: Int?
 
-    /// The port that powers the Mac: the one with a power budget, else one with an RDO.
+    var resolved: PDContractResolver.Result? {
+        PDContractResolver.resolve(ports: ports, selectedIndex: selectedIndex,
+                                   reportsSelection: reportsSelection, pmuVoltage: pmuVoltage)
+    }
+
+    /// The port that powers the Mac.
     var activePort: PDPortState? {
-        ports.first { ($0.maxPower ?? 0) > 0 } ?? ports.first { $0.rdoContract != nil }
+        resolved?.port ?? PDContractResolver.candidates(ports).first
     }
 
-    /// The contract in use. The power manager's selection decides which PDO is active;
-    /// the RDO only supplies the operating current when it refers to that same PDO.
-    var contract: PDContract? {
-        guard let port = activePort else { return nil }
-        if let index = selectedIndex, let pdo = port.pdos.first(where: { $0.position == index + 1 }) {
-            let rdo = port.rdoContract.flatMap { $0.pdo.position == pdo.position ? $0.rdo : nil }
-            return PDContract(pdo: pdo, rdo: rdo, basis: rdo == nil ? .powerManager : .confirmed)
-        }
-        // The power manager says no PD profile is in use (e.g. 5 V fallback while re-attaching).
-        if reportsSelection { return nil }
-        return port.rdoContract
-    }
+    /// The contract in use, or nil when no PD profile is in use.
+    var contract: PDContract? { resolved?.contract }
 
     /// The elected USB-PD source, if macOS published one.
     var electedPD: ElectedSource? {
@@ -101,20 +98,15 @@ struct PDState {
             state.reportsSelection = true
             state.selectedIndex = index == 255 ? nil : index
         }
+        state.pmuVoltage = int((battery["PowerDistribution"] as? [String: Any])?["IPDInputVoltage"])
         state.elected = electedSources()
         return state
     }
 
     private static func port(index: Int, info: [String: Any]) -> PDPortState? {
-        // The controller lists SPR objects first, then EPR objects. Per USB PD 3.1, SPR
-        // objects occupy positions 1–7 and EPR objects start at position 8.
         let raws = ((info["PortControllerPortPDO"] as? [NSNumber]) ?? [])
             .map { UInt32(truncatingIfNeeded: $0.int64Value) }
-            .filter { $0 != 0 }
-        let sprCount = int(info["PortControllerNPDOs"]) ?? raws.count
-        let pdos = raws.enumerated().map { k, raw in
-            DecodedPDO(raw: raw, position: k < sprCount ? k + 1 : 8 + (k - sprCount))
-        }
+        let pdos = decodePDOs(raws, sprCount: int(info["PortControllerNPDOs"]))
         let rdo = UInt32(truncatingIfNeeded: int(info["PortControllerActiveContractRdo"]) ?? 0)
         // Skip ports that have never seen a PD source.
         guard !pdos.isEmpty || rdo != 0 else { return nil }
@@ -138,6 +130,16 @@ struct PDState {
             firmware: int(info["PortControllerFwVersion"]),
             counters: counters
         )
+    }
+
+    /// Decodes the controller's PDO list. It lists SPR objects first, then EPR objects;
+    /// per USB PD 3.1, SPR objects occupy positions 1–7 and EPR objects start at position 8.
+    static func decodePDOs(_ raws: [UInt32], sprCount: Int?) -> [DecodedPDO] {
+        let objects = raws.filter { $0 != 0 }
+        let spr = sprCount ?? objects.count
+        return objects.enumerated().map { k, raw in
+            DecodedPDO(raw: raw, position: k < spr ? k + 1 : 8 + (k - spr))
+        }
     }
 
     /// Walks every port's "Power In" node and reads its power-source children.

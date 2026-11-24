@@ -216,8 +216,8 @@ struct HistoryChart: View {
                 AxisMarks(values: .automatic(desiredCount: compact ? 3 : 6)) {
                     AxisGridLine()
                     AxisValueLabel(format: range == .week
-                                   ? .dateTime.month(.defaultDigits).day().hour(.twoDigits(amPM: .omitted))
-                                   : .dateTime.hour(.twoDigits(amPM: .omitted)).minute())
+                                   ? .dateTime.month(.defaultDigits).day().hour()
+                                   : .dateTime.hour().minute())
                 }
             }
             .chartForegroundStyleScale(domain: metric.series.map(\.name), range: metric.series.map(\.color))
