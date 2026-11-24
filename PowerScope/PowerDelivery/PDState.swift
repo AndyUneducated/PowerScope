@@ -18,7 +18,9 @@ nonisolated struct PDPortState: Identifiable, Sendable {
     let index: Int
     let pdos: [DecodedPDO]
     let rawRDO: UInt32
-    let contract: PDContract?
+    /// The contract the RDO points to. The port controller does not refresh the RDO
+    /// for every contract (EPR contracts keep the last SPR request), so it can be stale.
+    let rdoContract: PDContract?
     let maxPower: Int?            // mW, reported for the port that supplies the system
     let loserReason: Int?
     let firmware: Int?
@@ -61,14 +63,29 @@ struct ContractCrossCheck: Identifiable {
 struct PDState {
     var ports: [PDPortState] = []
     var elected: [ElectedSource] = []
+    /// The power manager's selected source profile (`UsbHvcHvcIndex`, 0-based);
+    /// nil when it reports 255 (no PD profile in use).
+    var selectedIndex: Int?
+    /// Whether the system publishes `UsbHvcHvcIndex` at all.
+    var reportsSelection = false
 
-    /// The port that powers the Mac: a live contract, preferring the one with a power budget.
+    /// The port that powers the Mac: the one with a power budget, else one with an RDO.
     var activePort: PDPortState? {
-        let live = ports.filter { $0.contract != nil }
-        return live.first { ($0.maxPower ?? 0) > 0 } ?? live.first
+        ports.first { ($0.maxPower ?? 0) > 0 } ?? ports.first { $0.rdoContract != nil }
     }
 
-    var contract: PDContract? { activePort?.contract }
+    /// The contract in use. The power manager's selection decides which PDO is active;
+    /// the RDO only supplies the operating current when it refers to that same PDO.
+    var contract: PDContract? {
+        guard let port = activePort else { return nil }
+        if let index = selectedIndex, let pdo = port.pdos.first(where: { $0.position == index + 1 }) {
+            let rdo = port.rdoContract.flatMap { $0.pdo.position == pdo.position ? $0.rdo : nil }
+            return PDContract(pdo: pdo, rdo: rdo, basis: rdo == nil ? .powerManager : .confirmed)
+        }
+        // The power manager says no PD profile is in use (e.g. 5 V fallback while re-attaching).
+        if reportsSelection { return nil }
+        return port.rdoContract
+    }
 
     /// The elected USB-PD source, if macOS published one.
     var electedPD: ElectedSource? {
@@ -80,15 +97,23 @@ struct PDState {
         if let infos = battery["PortControllerInfo"] as? [[String: Any]] {
             state.ports = infos.enumerated().compactMap { index, info in port(index: index, info: info) }
         }
+        if let adapter = battery["AdapterDetails"] as? [String: Any], let index = int(adapter["UsbHvcHvcIndex"]) {
+            state.reportsSelection = true
+            state.selectedIndex = index == 255 ? nil : index
+        }
         state.elected = electedSources()
         return state
     }
 
     private static func port(index: Int, info: [String: Any]) -> PDPortState? {
-        let rawPDOs = (info["PortControllerPortPDO"] as? [NSNumber]) ?? []
-        let pdos = rawPDOs.enumerated().compactMap { offset, n -> DecodedPDO? in
-            let raw = UInt32(truncatingIfNeeded: n.int64Value)
-            return raw == 0 ? nil : DecodedPDO(raw: raw, position: offset + 1)
+        // The controller lists SPR objects first, then EPR objects. Per USB PD 3.1, SPR
+        // objects occupy positions 1–7 and EPR objects start at position 8.
+        let raws = ((info["PortControllerPortPDO"] as? [NSNumber]) ?? [])
+            .map { UInt32(truncatingIfNeeded: $0.int64Value) }
+            .filter { $0 != 0 }
+        let sprCount = int(info["PortControllerNPDOs"]) ?? raws.count
+        let pdos = raws.enumerated().map { k, raw in
+            DecodedPDO(raw: raw, position: k < sprCount ? k + 1 : 8 + (k - sprCount))
         }
         let rdo = UInt32(truncatingIfNeeded: int(info["PortControllerActiveContractRdo"]) ?? 0)
         // Skip ports that have never seen a PD source.
@@ -107,7 +132,7 @@ struct PDState {
             index: index,
             pdos: pdos,
             rawRDO: rdo,
-            contract: PDContract.decode(rdo: rdo, pdos: pdos),
+            rdoContract: PDContract.decode(rdo: rdo, pdos: pdos),
             maxPower: maxPower == 0 ? nil : maxPower,
             loserReason: int(info["PortControllerLoserReason"]),
             firmware: int(info["PortControllerFwVersion"]),
@@ -182,35 +207,56 @@ struct PDState {
 }
 
 extension BatterySnapshot {
-    /// Compares the negotiated PD contract with every other place the system reports it.
+    /// Compares the contract in use with every other place the system reports it.
     var contractCrossChecks: [ContractCrossCheck] {
         let reference = pd.contract
-        func status(_ voltage: Int?) -> CheckStatus {
+        func status(_ voltage: Int?, below: Int = 50, above: Int = 50) -> CheckStatus {
             guard let voltage, let reference else { return .unavailable }
-            return abs(voltage - reference.voltage) <= 50 ? .match : .mismatch
+            let diff = voltage - reference.voltage
+            return (-below...above).contains(diff) ? .match : .mismatch
         }
-
         var checks: [ContractCrossCheck] = []
-        if let elected = pd.electedPD {
+
+        if let rdo = pd.activePort?.rdoContract {
+            let stale = reference.map { $0.pdo.position != rdo.pdo.position } ?? false
             checks.append(ContractCrossCheck(
-                id: "elected", source: "macOS elected source",
-                detail: elected.path.isEmpty ? elected.name : elected.path,
-                voltage: elected.voltage, current: elected.current, status: status(elected.voltage)))
+                id: "rdo", source: "Port controller RDO",
+                detail: stale ? "Refers to PDO \(rdo.pdo.position); not refreshed for the current contract"
+                              : "PDO \(rdo.pdo.position), \(rdo.pdo.kind.rawValue)",
+                voltage: rdo.voltage, current: rdo.current, status: status(rdo.voltage)))
         } else {
-            checks.append(ContractCrossCheck(id: "elected", source: "macOS elected source",
-                                             detail: "Not published", voltage: nil, current: nil, status: .unavailable))
+            checks.append(ContractCrossCheck(id: "rdo", source: "Port controller RDO", detail: "No RDO",
+                                             voltage: nil, current: nil, status: .unavailable))
         }
 
-        let hvc = adapter?.profiles.first { $0.index == adapter?.activeProfileIndex }
+        let selected = pd.selectedIndex
         checks.append(ContractCrossCheck(
-            id: "hvc", source: "Adapter profile index (UsbHvcHvcIndex)",
-            detail: hvc.map { "Index \($0.index)" } ?? "No profile selected (index 255)",
-            voltage: hvc?.maxVoltage, current: hvc?.maxCurrent, status: status(hvc?.maxVoltage)))
+            id: "hvc", source: "Power manager profile (UsbHvcHvcIndex)",
+            detail: selected.map { "Index \($0) → PDO \($0 + 1)" } ?? (pd.reportsSelection ? "No profile selected (255)" : "Not reported"),
+            voltage: selected.flatMap { i in pd.activePort?.pdos.first { $0.position == i + 1 }?.maxVoltage },
+            current: selected.flatMap { i in pd.activePort?.pdos.first { $0.position == i + 1 }?.maxCurrent },
+            status: selected == nil ? .unavailable : .match))
 
         checks.append(ContractCrossCheck(
             id: "ipd", source: "PMU input setpoint (IPDInputVoltage)",
             detail: ipdInputVoltage.map { $0 <= 5000 ? "At 5 V fallback" : "Configured" } ?? "Not reported",
             voltage: ipdInputVoltage, current: ipdInputCurrent, status: status(ipdInputVoltage)))
+
+        // The internal input rail sits behind the input switches, so it reads a little
+        // below VBUS under load: accept up to 10 % below and 5 % above.
+        let measured = telemetry.systemVoltageIn
+        let tolerance = reference.map { $0.voltage / 10 } ?? 0
+        checks.append(ContractCrossCheck(
+            id: "measured", source: "Measured system input (SystemVoltageIn)",
+            detail: "Accepts 10 % drop under load", voltage: measured, current: telemetry.systemCurrentIn,
+            status: status(measured, below: tolerance, above: tolerance / 2)))
+
+        if let elected = pd.electedPD {
+            checks.append(ContractCrossCheck(
+                id: "elected", source: "macOS elected USB-C source",
+                detail: (elected.path.isEmpty ? elected.name : elected.path) + " · may keep a previous charger's value",
+                voltage: elected.voltage, current: elected.current, status: status(elected.voltage)))
+        }
         return checks
     }
 }

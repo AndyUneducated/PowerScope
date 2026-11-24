@@ -145,33 +145,57 @@ nonisolated struct DecodedRDO: Hashable, Sendable {
     }
 }
 
-/// The contract a port controller has agreed with the source.
+/// How the active PDO was identified.
+nonisolated enum ContractBasis: Sendable {
+    /// The power manager's selected profile and the port controller's RDO agree.
+    case confirmed
+    /// Only the power manager's selection; the RDO points elsewhere (the port
+    /// controller does not refresh it for every contract, e.g. EPR).
+    case powerManager
+    /// Only the RDO; the power manager published no selection.
+    case rdoOnly
+}
+
+/// The contract in use between the Mac and the source.
 nonisolated struct PDContract: Hashable, Sendable {
     let pdo: DecodedPDO
-    let rdo: DecodedRDO
+    /// The RDO, only when it references this PDO.
+    let rdo: DecodedRDO?
+    var basis: ContractBasis = .rdoOnly
 
     /// Negotiated bus voltage in mV: the PDO voltage for fixed supplies,
     /// the requested voltage for programmable ones.
     var voltage: Int {
-        if pdo.kind.isProgrammable, let v = rdo.requestedVoltage { return v }
+        if pdo.kind.isProgrammable, let v = rdo?.requestedVoltage { return v }
         return pdo.maxVoltage
     }
 
-    /// Negotiated operating current in mA.
+    /// Negotiated operating current in mA, known only from a matching RDO.
     var current: Int? {
+        guard let rdo else { return nil }
         if let c = rdo.operatingCurrent { return c }
         if let p = rdo.operatingPower, voltage > 0 { return p * 1000 / voltage }
         return nil
     }
 
+    /// The most current the source allows at this voltage (PDO limit), in mA.
+    var currentLimit: Int? {
+        if let c = pdo.maxCurrent { return c }
+        if let p = pdo.maxPower, voltage > 0 { return p * 1000 / voltage }
+        return nil
+    }
+
+    /// Operating current if known, otherwise the PDO limit.
+    var displayCurrent: Int? { current ?? currentLimit }
+
     var powerW: Double? {
-        current.map { Double(voltage) * Double($0) / 1_000_000 }
+        displayCurrent.map { Double(voltage) * Double($0) / 1_000_000 }
     }
 
     static func decode(rdo raw: UInt32, pdos: [DecodedPDO]) -> PDContract? {
         guard raw != 0 else { return nil }
         let position = Int((raw >> 28) & 0xF)
         guard let pdo = pdos.first(where: { $0.position == position }) else { return nil }
-        return PDContract(pdo: pdo, rdo: DecodedRDO(raw: raw, referencing: pdo))
+        return PDContract(pdo: pdo, rdo: DecodedRDO(raw: raw, referencing: pdo), basis: .rdoOnly)
     }
 }

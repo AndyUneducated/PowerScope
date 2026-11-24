@@ -11,20 +11,16 @@ A native macOS battery and charging monitor (Swift 6, SwiftUI, Swift Charts, Swi
 
 ## Precision features
 ### Negotiated PD voltage
-- The contract is decoded from the port controller's active Request Data Object (`PortControllerActiveContractRdo`) and the PDO it points to (`PortControllerPortPDO`), following USB PD 3.1. Fixed, Battery, Variable, PPS and AVS objects are supported; for PPS/AVS the negotiated voltage comes from the RDO.
-- The contract is cross-checked against the source macOS elected (`WinningPowerSourceOption`), the adapter profile index (`UsbHvcHvcIndex`) and the PMU input setpoint (`IPDInputVoltage`).
+- Source capabilities come from the port controller (`PortControllerPortPDO`) and are decoded per USB PD 3.1: Fixed, Battery, Variable, PPS and AVS. SPR objects take positions 1–7 and EPR objects start at position 8.
+- The PDO in use is the power manager's selection (`UsbHvcHvcIndex`, 0-based). The port controller's RDO (`PortControllerActiveContractRdo`) supplies the operating current only when it points to the same PDO; it is not refreshed for every contract (an EPR 28 V contract keeps the last SPR request), so on its own it can be stale. When the RDO does not match, the PDO's current limit is shown instead.
+- The contract is cross-checked against the RDO, the PMU input setpoint (`IPDInputVoltage`), the measured system input (within 10 % below / 5 % above) and the source macOS elected (`WinningPowerSourceOption`, which can keep a previous charger's value).
 - Port controller counters (attach, hard reset, Source_Capabilities, rejects) are compared every second. Because the firmware keeps counting between samples, every reconnect and renegotiation is logged in the PD timeline even when it happens faster than the polling rate. Repeats within 60 s are folded into one event.
 
 ### Charging voltage
-- Every voltage is shown with its source and type: setpoint (agreed or requested), measured, derived or calibrated. "System input" is an internal power rail, not VBUS.
+- Every voltage is shown with its source and type: setpoint (agreed or requested), measured or derived. "System input" is an internal power rail, not VBUS.
 - Readings are taken every second and on IOKit battery notifications. Each stored 5-second window keeps average, minimum and maximum, so short dips are not averaged away.
 - Battery voltage prefers SMC `B0AV` (updates every second) over the gauge `Voltage` (updates every few seconds). The gauge's age is shown.
 - Consistency checks: gauge pack vs sum of cells (30 mV + 35 mΩ × |I|), gauge vs SMC pack (only when the gauge value is fresh), telemetry vs SMC input (only while input is steady), negotiated vs elected source, input stability, PD link stability, gauge freshness.
-
-### Calibration with an external meter
-macOS does not expose a calibrated VBUS measurement. With a USB-C PD meter between charger and Mac, enter the meter's VBUS voltage and current in Charging → PD Contract → Calibrate. PowerScope stores, per adapter:
-- the adapter's VBUS error (meter − negotiated), shown as a meter-calibrated VBUS, and
-- an input power correction factor (meter power ÷ reported input power).
 
 ## Rules
 - Fast charging: battery charging power ≥ 30 W (`BatterySnapshot.fastChargeWatts`); below 10 W counts as slow/trickle charging.

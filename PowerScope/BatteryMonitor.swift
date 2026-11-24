@@ -27,7 +27,6 @@ final class BatteryMonitor {
     private(set) var history: [HistoryPoint] = []
     private(set) var live: [LiveReading] = []
     private(set) var events: [PDEvent] = []
-    private(set) var calibration: Calibration?
 
     @ObservationIgnored private let container: ModelContainer?
     @ObservationIgnored private var window: [BatterySnapshot] = []
@@ -36,8 +35,8 @@ final class BatteryMonitor {
     @ObservationIgnored private var lastReadDate = Date.distantPast
     @ObservationIgnored private var previousPorts: [Int: PDPortState] = [:]
     @ObservationIgnored private var previousElected: ElectedSource?
+    @ObservationIgnored private var previousContract: PDContract?
     @ObservationIgnored private var trackingStarted = false
-    @ObservationIgnored private var adapterKey: String?
     @ObservationIgnored private var notificationPort: IONotificationPortRef?
     @ObservationIgnored private var interestNotifier: io_object_t = 0
     @ObservationIgnored private var pollTask: Task<Void, Never>?
@@ -76,7 +75,6 @@ final class BatteryMonitor {
         guard now.timeIntervalSince(lastReadDate) >= 0.3 else { return }
         lastReadDate = now
         snapshot = BatteryReader.read(now: now)
-        refreshCalibrationIfNeeded()
         appendLive(snapshot)
         trackPowerDelivery(snapshot)
 
@@ -143,6 +141,7 @@ final class BatteryMonitor {
         defer {
             previousPorts = Dictionary(uniqueKeysWithValues: s.pd.ports.map { ($0.index, $0) })
             previousElected = s.pd.electedPD
+            previousContract = s.pd.contract
         }
         guard trackingStarted else {
             trackingStarted = true
@@ -153,39 +152,42 @@ final class BatteryMonitor {
             return
         }
 
+        // The contract in use (power manager selection + RDO), compared as a whole.
+        let activeIndex = s.pd.activePort?.index ?? -1
+        switch (previousContract, s.pd.contract) {
+        case (nil, let new?):
+            log(.established, port: activeIndex, count: 1, detail: describe(new), contract: new, at: s.date)
+        case (_?, nil):
+            log(.lost, port: activeIndex, count: 1, detail: "No PD profile in use", contract: nil, at: s.date)
+        case (let old?, let new?) where old.voltage != new.voltage || old.pdo != new.pdo || old.current != new.current:
+            log(.changed, port: activeIndex, count: 1, detail: "\(describe(old)) → \(describe(new))", contract: new, at: s.date)
+        default:
+            break
+        }
+
+        let contract = s.pd.contract
         for port in s.pd.ports {
             guard let previous = previousPorts[port.index] else { continue }
             let now = port.counters, before = previous.counters
             func delta(_ key: KeyPath<PDCounters, Int>) -> Int { max(0, now[keyPath: key] - before[keyPath: key]) }
 
-            switch (previous.contract, port.contract) {
-            case (nil, let new?):
-                log(.established, port: port.index, count: 1, detail: describe(new), contract: new, at: s.date)
-            case (_?, nil):
-                log(.lost, port: port.index, count: 1, detail: "No active contract", contract: nil, at: s.date)
-            case (let old?, let new?) where old != new:
-                log(.changed, port: port.index, count: 1, detail: "\(describe(old)) → \(describe(new))", contract: new, at: s.date)
-            default:
-                break
-            }
-
             let attaches = delta(\.attach)
             if attaches > 0 {
                 log(.reconnected, port: port.index, count: attaches,
-                    detail: "Source detached and re-attached", contract: port.contract, at: s.date)
+                    detail: "Source detached and re-attached", contract: contract, at: s.date)
             }
             let renegotiations = delta(\.sourceCapabilities) - attaches
             if renegotiations > 0 {
                 log(.renegotiated, port: port.index, count: renegotiations,
-                    detail: "New Source_Capabilities without a reconnect", contract: port.contract, at: s.date)
+                    detail: "New Source_Capabilities without a reconnect", contract: contract, at: s.date)
             }
             let resets = delta(\.hardResets)
             if resets > 0 {
-                log(.hardReset, port: port.index, count: resets, detail: "PD hard reset", contract: port.contract, at: s.date)
+                log(.hardReset, port: port.index, count: resets, detail: "PD hard reset", contract: contract, at: s.date)
             }
             let rejects = delta(\.requestRejects) + delta(\.psReadyRejects)
             if rejects > 0 {
-                log(.rejected, port: port.index, count: rejects, detail: "Source rejected a request", contract: port.contract, at: s.date)
+                log(.rejected, port: port.index, count: rejects, detail: "Source rejected a request", contract: contract, at: s.date)
             }
         }
 
@@ -199,7 +201,8 @@ final class BatteryMonitor {
 
     private func describe(_ c: PDContract) -> String {
         let v = Format.number(Double(c.voltage) / 1000, digits: 2, unit: "V")
-        let i = c.current.map { Format.number(Double($0) / 1000, digits: 2, unit: "A") } ?? "—"
+        let i = c.current.map { Format.number(Double($0) / 1000, digits: 2, unit: "A") }
+            ?? c.currentLimit.map { "≤ " + Format.number(Double($0) / 1000, digits: 2, unit: "A") } ?? "—"
         return "\(v) \(i) (PDO \(c.pdo.position), \(c.pdo.kind.rawValue))"
     }
 
@@ -230,29 +233,6 @@ final class BatteryMonitor {
     func problemCount(within seconds: TimeInterval) -> Int {
         let cutoff = snapshot.date.addingTimeInterval(-seconds)
         return events.filter { $0.eventKind.isProblem && $0.lastDate >= cutoff }.reduce(0) { $0 + $1.count }
-    }
-
-    // MARK: Calibration
-
-    private func refreshCalibrationIfNeeded() {
-        let key = CalibrationStore.adapterKey(snapshot.adapter)
-        guard key != adapterKey else { return }
-        adapterKey = key
-        calibration = CalibrationStore.calibration(for: snapshot.adapter)
-    }
-
-    func saveCalibration(meterVoltage: Double, meterCurrent: Double) {
-        guard let contract = snapshot.pd.contract else { return }
-        let value = Calibration(date: .now, meterVoltage: meterVoltage, meterCurrent: meterCurrent,
-                                negotiatedVoltage: Double(contract.voltage) / 1000,
-                                reportedInputPower: snapshot.inputPowerW ?? 0)
-        CalibrationStore.save(value, for: snapshot.adapter)
-        calibration = value
-    }
-
-    func clearCalibration() {
-        CalibrationStore.save(nil, for: snapshot.adapter)
-        calibration = nil
     }
 
     // MARK: Notifications

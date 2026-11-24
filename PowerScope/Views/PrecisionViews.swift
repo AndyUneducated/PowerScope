@@ -25,7 +25,6 @@ extension CheckStatus {
 
 struct PDContractCard: View {
     @Environment(BatteryMonitor.self) private var monitor
-    @State private var showsCalibration = false
 
     var body: some View {
         let s = monitor.snapshot
@@ -38,52 +37,58 @@ struct PDContractCard: View {
                         Text("Negotiated voltage").font(.caption).foregroundStyle(.secondary)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(amps(contract.current))
+                        Text(contract.current != nil ? amps(contract.current) : "≤ " + amps(contract.currentLimit))
                             .font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text("Negotiated current").font(.caption).foregroundStyle(.secondary)
+                        Text(contract.current != nil ? "Negotiated current" : "Current limit (PDO)")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text(Format.number(contract.powerW, digits: 1, unit: "W"))
                             .font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text("Contract power").font(.caption).foregroundStyle(.secondary)
+                        Text(contract.current != nil ? "Contract power" : "Max power").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button("Calibrate…") { showsCalibration = true }
                 }
-                Text("Decoded from the port controller's active Request Data Object: PDO \(contract.pdo.position) (\(contract.pdo.kind.rawValue)) on port controller \(port.index). RDO \(Format.hex(Int(contract.rdo.raw))) · PDO \(Format.hex(Int(contract.pdo.raw))).")
+                Text(basisText(contract, port: port))
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                if contract.rdo.capabilityMismatch {
+                if contract.rdo?.capabilityMismatch == true {
                     Label("Capability mismatch: the Mac wants more power than this source offers.", systemImage: "exclamationmark.triangle.fill")
                         .font(.callout).foregroundStyle(.orange)
                 }
-                if let cal = monitor.calibration {
-                    Label("Meter-calibrated VBUS: \(Format.number(Double(contract.voltage) / 1000 + cal.vbusOffset, digits: 3, unit: "V")) (adapter error \(Format.signed(cal.vbusOffset * 1000, digits: 0, unit: "mV")), \(Format.signed(cal.vbusErrorPercent, digits: 2, unit: "%")))",
-                          systemImage: "gauge.with.needle")
-                        .font(.callout).foregroundStyle(.teal)
-                }
-                Divider()
-                Text("Cross-check").font(.subheadline.weight(.semibold))
-                VStack(spacing: 0) {
-                    ForEach(s.contractCrossChecks) { check in
-                        HStack(alignment: .firstTextBaseline) {
-                            Image(systemName: check.status.symbol).foregroundStyle(check.status.color)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(check.source)
-                                Text(check.detail).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text("\(volts(check.voltage)) · \(amps(check.current))").monospacedDigit()
-                        }
-                        .font(.callout)
-                        .padding(.vertical, 4)
-                    }
-                }
             } else {
-                Text(s.externalConnected ? "No USB-C PD contract is active (non-PD or MagSafe source)." : "Not connected to power.")
+                Text(s.externalConnected ? "No PD profile in use right now (non-PD source, or the link is re-attaching at 5 V)." : "Not connected to power.")
                     .foregroundStyle(.secondary)
             }
+            Divider()
+            Text("Cross-check").font(.subheadline.weight(.semibold))
+            VStack(spacing: 0) {
+                ForEach(s.contractCrossChecks) { check in
+                    HStack(alignment: .firstTextBaseline) {
+                        Image(systemName: check.status.symbol).foregroundStyle(check.status.color)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(check.source)
+                            Text(check.detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("\(volts(check.voltage)) · \(amps(check.current))").monospacedDigit()
+                    }
+                    .font(.callout)
+                    .padding(.vertical, 4)
+                }
+            }
         }
-        .sheet(isPresented: $showsCalibration) { CalibrationSheet() }
+    }
+
+    private func basisText(_ c: PDContract, port: PDPortState) -> String {
+        let pdo = "PDO \(c.pdo.position) (\(c.pdo.kind.rawValue), \(Format.hex(Int(c.pdo.raw))))"
+        switch c.basis {
+        case .confirmed:
+            return "\(pdo) on port controller \(port.index). Selected by the power manager and confirmed by the port controller's RDO \(Format.hex(Int(port.rawRDO)))."
+        case .powerManager:
+            return "\(pdo) on port controller \(port.index), selected by the power manager. The port controller's RDO was not refreshed for this contract, so the operating current is unknown and the PDO limit is shown."
+        case .rdoOnly:
+            return "\(pdo) on port controller \(port.index), decoded from the RDO \(Format.hex(Int(port.rawRDO))). The power manager publishes no selection to confirm it."
+        }
     }
 }
 
@@ -137,13 +142,12 @@ struct VoltageSourcesCard: View {
     @Environment(BatteryMonitor.self) private var monitor
 
     enum Kind: String {
-        case measured = "Measured", setpoint = "Setpoint", derived = "Derived", calibrated = "Calibrated"
+        case measured = "Measured", setpoint = "Setpoint", derived = "Derived"
         var color: Color {
             switch self {
             case .measured: .blue
             case .setpoint: .purple
             case .derived: .gray
-            case .calibrated: .teal
             }
         }
     }
@@ -188,17 +192,11 @@ struct VoltageSourcesCard: View {
         var rows: [Row] = []
         let contract = s.pd.contract
         rows.append(Row(name: "VBUS, negotiated", value: volts(contract?.voltage), kind: .setpoint,
-                        source: contract.map { "PD RDO → PDO \($0.pdo.position)" } ?? "No PD contract"))
+                        source: contract.map { "PDO \($0.pdo.position), selected by the power manager" } ?? "No PD profile in use"))
         rows.append(Row(name: "VBUS, elected by macOS", value: volts(s.pd.electedPD?.voltage), kind: .setpoint,
                         source: "IOPortFeaturePowerSource"))
         rows.append(Row(name: "VBUS, measured", value: s.chargerVBUS.map { volts($0, digits: 3) } ?? "Not reported",
                         kind: .measured, source: "AppleChargerData ChargerVBUS"))
-        if let cal = monitor.calibration, let contract {
-            rows.append(Row(name: "VBUS, meter-calibrated",
-                            value: Format.number(Double(contract.voltage) / 1000 + cal.vbusOffset, digits: 3, unit: "V"),
-                            kind: .calibrated,
-                            source: "Negotiated + meter offset (\(cal.date.formatted(date: .abbreviated, time: .shortened)))"))
-        }
         rows.append(Row(name: "PMU input setpoint", value: volts(s.ipdInputVoltage), kind: .setpoint,
                         source: "PowerDistribution IPDInputVoltage"))
         rows.append(Row(name: "System input (telemetry)", value: Format.number(s.inputVoltageV, digits: 3, unit: "V"), kind: .measured,
@@ -329,14 +327,14 @@ struct PDLinkCard: View {
             } else {
                 Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
                     GridRow {
-                        Text("Port"); Text("Contract"); Text("Budget"); Text("Attach"); Text("Hard resets"); Text("Src caps"); Text("Rejects")
+                        Text("Port"); Text("RDO request"); Text("Budget"); Text("Attach"); Text("Hard resets"); Text("Src caps"); Text("Rejects")
                     }
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Divider()
                     ForEach(s.pd.ports) { port in
                         GridRow {
                             Text("\(port.index)\(port.index == s.pd.activePort?.index ? " (active)" : "")")
-                            Text(port.contract.map { "\(volts($0.voltage)) \(amps($0.current))" } ?? "—")
+                            Text(port.rdoContract.map { "\(volts($0.voltage)) \(amps($0.current))" } ?? "—")
                             Text(port.maxPower.map { "\($0 / 1000) W" } ?? "—")
                             Text("\(port.counters.attach)")
                             Text("\(port.counters.hardResets)")
@@ -401,7 +399,7 @@ struct PDProfilesCard: View {
             Card(title: "Source Capabilities (PDOs)", symbol: "list.number") {
                 VStack(spacing: 0) {
                     ForEach(port.pdos) { pdo in
-                        let active = pdo.position == port.contract?.pdo.position
+                        let active = pdo.position == s.pd.contract?.pdo.position
                         HStack {
                             Text("PDO \(pdo.position)").foregroundStyle(.secondary).frame(width: 60, alignment: .leading)
                             Text(pdo.kind.rawValue).frame(width: 70, alignment: .leading)
@@ -424,73 +422,5 @@ struct PDProfilesCard: View {
                 }
             }
         }
-    }
-}
-
-// MARK: - Calibration
-
-struct CalibrationSheet: View {
-    @Environment(BatteryMonitor.self) private var monitor
-    @Environment(\.dismiss) private var dismiss
-    @State private var meterVoltage: Double?
-    @State private var meterCurrent: Double?
-
-    var body: some View {
-        let s = monitor.snapshot
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Calibrate with a USB-C meter").font(.title2.weight(.semibold))
-            Text("Put a USB-C PD meter between the charger and the Mac. When the reading is steady, enter the meter's VBUS voltage and current, then save. The calibration is stored for this charger only.")
-                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 8) {
-                GridRow {
-                    Text("Charger")
-                    Text(s.adapterSummary ?? "—")
-                }
-                GridRow {
-                    Text("Negotiated now")
-                    Text(volts(s.pd.contract?.voltage, digits: 3)).monospacedDigit()
-                }
-                GridRow {
-                    Text("Reported input power")
-                    Text(Format.number(s.inputPowerW, digits: 2, unit: "W")).monospacedDigit()
-                }
-                GridRow {
-                    Text("Meter voltage (V)")
-                    TextField("e.g. 20.12", value: $meterVoltage, format: .number.precision(.fractionLength(0...3)))
-                        .frame(width: 140)
-                }
-                GridRow {
-                    Text("Meter current (A)")
-                    TextField("e.g. 2.95", value: $meterCurrent, format: .number.precision(.fractionLength(0...3)))
-                        .frame(width: 140)
-                }
-            }
-
-            if let cal = monitor.calibration {
-                Divider()
-                Text("Current calibration (\(cal.date.formatted(date: .abbreviated, time: .shortened)))").font(.headline)
-                Text("Adapter VBUS error: \(Format.signed(cal.vbusOffset * 1000, digits: 0, unit: "mV")) (\(Format.signed(cal.vbusErrorPercent, digits: 2, unit: "%")))")
-                Text("Input power correction: \(cal.powerGain.map { "× " + Format.number($0, digits: 3) } ?? "not available (input power was 0)")")
-            }
-
-            HStack {
-                if monitor.calibration != nil {
-                    Button("Remove Calibration", role: .destructive) { monitor.clearCalibration() }
-                }
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") {
-                    if let v = meterVoltage, let i = meterCurrent {
-                        monitor.saveCalibration(meterVoltage: v, meterCurrent: i)
-                        dismiss()
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(meterVoltage == nil || meterCurrent == nil || s.pd.contract == nil)
-            }
-        }
-        .padding(24)
-        .frame(width: 520)
     }
 }

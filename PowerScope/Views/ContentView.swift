@@ -56,6 +56,13 @@ struct OverviewPage: View {
     @Environment(BatteryMonitor.self) private var monitor
     @State private var metric: HistoryMetric = .power
 
+    private var metricPicker: some View {
+        Picker("Metric", selection: $metric) {
+            ForEach(HistoryMetric.allCases) { Text($0.title).tag($0) }
+        }
+        .labelsHidden()
+    }
+
     var body: some View {
         let s = monitor.snapshot
         PageScroll {
@@ -111,12 +118,11 @@ struct OverviewPage: View {
             }
 
             Card(title: "Last Hour", symbol: "chart.xyaxis.line") {
-                Picker("Metric", selection: $metric) {
-                    ForEach(HistoryMetric.allCases) { Text($0.title).tag($0) }
+                // Segmented when there is room; a menu when the window is too narrow.
+                ViewThatFits(in: .horizontal) {
+                    metricPicker.pickerStyle(.segmented).fixedSize()
+                    metricPicker.pickerStyle(.menu).fixedSize()
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 380)
                 HistoryChart(metric: metric, range: .hour)
                     .frame(height: 230)
             }
@@ -152,7 +158,6 @@ struct ChargingPage: View {
                     ("System input voltage", Format.number(s.inputVoltageV, digits: 2, unit: "V")),
                     ("System input current", Format.number(s.inputCurrentA, digits: 3, unit: "A")),
                     ("Input power", Format.number(s.inputPowerW, digits: 2, unit: "W")),
-                    ("Input power, meter-calibrated", calibratedInputPower(s)),
                     ("SMC input power (PDTR)", Format.number(s.smc.dcInPower, digits: 2, unit: "W")),
                     ("System load", Format.number(s.systemLoadW, digits: 2, unit: "W")),
                     ("Adapter conversion loss", Format.number(s.adapterLossW, digits: 2, unit: "W")),
@@ -183,11 +188,6 @@ struct ChargingPage: View {
                 ])
             }
         }
-    }
-
-    private func calibratedInputPower(_ s: BatterySnapshot) -> String {
-        guard let gain = monitor.calibration?.powerGain, let power = s.inputPowerW else { return "Not calibrated" }
-        return Format.number(power * gain, digits: 2, unit: "W")
     }
 
     private func fastChargeText(_ s: BatterySnapshot) -> String {
