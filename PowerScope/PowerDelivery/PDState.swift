@@ -25,8 +25,23 @@ nonisolated struct PDPortState: Identifiable, Sendable {
     let loserReason: Int?
     let firmware: Int?
     let counters: PDCounters
+    /// Controller PD state; 0 when no PD source is attached.
+    var pdState: Int? = nil
+    /// Bit mask of attached source types; 0 when nothing is attached.
+    var sourceTypes: Int? = nil
 
     var id: Int { index }
+
+    /// Whether a charger is attached right now, or nil if the controller does not say.
+    /// The PDOs and RDO of a controller whose charger was unplugged stay cached, so they
+    /// only describe a charger when this is true.
+    var isConnected: Bool? {
+        guard pdState != nil || sourceTypes != nil else { return nil }
+        return (pdState ?? 0) != 0 || (sourceTypes ?? 0) != 0
+    }
+
+    /// Connected and chosen by macOS to power the system (LoserReason 0).
+    var isSupplying: Bool { isConnected == true && loserReason == 0 }
 }
 
 /// The power source macOS elected for a port (IOPortFeaturePowerSource "WinningPowerSourceOption").
@@ -76,7 +91,10 @@ struct PhysicalPort: Identifiable {
         return "\(parts[0].replacingOccurrences(of: "-", with: " ")) · port \(parts[1])"
     }
 
+    /// The source macOS is drawing power from on this port, if any.
     var inUse: PortSource? { sources.first(where: \.inUse) }
+    /// A source still marked "[*]" but no longer registered: a previous charger's cached entry.
+    var stale: PortSource? { sources.first { $0.marked && !$0.registered } }
 }
 
 struct PortSource: Identifiable {
@@ -86,10 +104,16 @@ struct PortSource: Identifiable {
         let power: Int     // mW
     }
     let name: String       // "USB-PD", "Brick ID", "TypeC"
-    let inUse: Bool
+    /// The registry name carries "[*]".
+    let marked: Bool
+    /// The node is registered. macOS leaves a disconnected charger's node in the registry
+    /// unregistered, still marked "[*]", so only registered nodes are live.
+    let registered: Bool
     let options: [Option]
     let winning: ElectedSource?
     var id: String { name }
+
+    var inUse: Bool { marked && registered }
 
     var maxPower: Int { options.map(\.power).max() ?? winning?.power ?? 0 }
 }
@@ -105,9 +129,12 @@ struct PDState {
     var reportsSelection = false
     /// The PMU's configured input voltage in mV (`IPDInputVoltage`); 5000 means the 5 V fallback.
     var pmuVoltage: Int?
+    /// Whether external power is connected at all; without it there is no contract.
+    var externalConnected = true
 
     var resolved: PDContractResolver.Result? {
-        PDContractResolver.resolve(ports: ports, selectedIndex: selectedIndex,
+        guard externalConnected else { return nil }
+        return PDContractResolver.resolve(ports: ports, selectedIndex: selectedIndex,
                                    reportsSelection: reportsSelection, pmuVoltage: pmuVoltage)
     }
 
@@ -135,9 +162,9 @@ struct PDState {
         }
         state.pmuVoltage = int((battery["PowerDistribution"] as? [String: Any])?["IPDInputVoltage"])
         state.physicalPorts = physicalPorts()
-        // Sources macOS currently uses first, then the last values other ports reported.
-        let sources = state.physicalPorts.flatMap(\.sources)
-        state.elected = (sources.filter(\.inUse) + sources.filter { !$0.inUse }).compactMap(\.winning)
+        // Only live (registered, in-use) sources count as elected; cached ones from a
+        // disconnected charger would otherwise look like a second charger.
+        state.elected = state.physicalPorts.flatMap(\.sources).filter(\.inUse).compactMap(\.winning)
         return state
     }
 
@@ -166,7 +193,9 @@ struct PDState {
             maxPower: maxPower == 0 ? nil : maxPower,
             loserReason: int(info["PortControllerLoserReason"]),
             firmware: int(info["PortControllerFwVersion"]),
-            counters: counters
+            counters: counters,
+            pdState: int(info["PortControllerPDst"]),
+            sourceTypes: int(info["PortControllerSrcTypes"])
         )
     }
 
@@ -190,6 +219,7 @@ struct PDState {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOPortFeaturePowerIn"), &iterator) == KERN_SUCCESS else { return [] }
         defer { IOObjectRelease(iterator) }
+        let live = registeredSourceIDs()
         var ports: [PhysicalPort] = []
         while case let powerIn = IOIteratorNext(iterator), powerIn != 0 {
             defer { IOObjectRelease(powerIn) }
@@ -218,13 +248,30 @@ struct PDState {
                             portNumber: int(dict["ParentPortNumber"]) ?? portNumber(from: portName),
                             voltage: o.voltage, current: o.current, power: o.power)
                     }
-                    sources.append(PortSource(name: sourceName, inUse: registryName.contains("[*]"),
+                    var entryID: UInt64 = 0
+                    IORegistryEntryGetRegistryEntryID(child, &entryID)
+                    sources.append(PortSource(name: sourceName, marked: registryName.contains("[*]"),
+                                              registered: live.contains(entryID),
                                               options: options.sorted { $0.voltage < $1.voltage }, winning: winning))
                 }
             }
             ports.append(PhysicalPort(name: portName, sources: sources))
         }
         return ports.sorted { $0.name < $1.name }
+    }
+
+    /// Registry IDs of the registered power-source nodes; matching only returns registered ones.
+    private static func registeredSourceIDs() -> Set<UInt64> {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOPortFeaturePowerSource"), &iterator) == KERN_SUCCESS else { return [] }
+        defer { IOObjectRelease(iterator) }
+        var ids: Set<UInt64> = []
+        while case let service = IOIteratorNext(iterator), service != 0 {
+            var id: UInt64 = 0
+            if IORegistryEntryGetRegistryEntryID(service, &id) == KERN_SUCCESS { ids.insert(id) }
+            IOObjectRelease(service)
+        }
+        return ids
     }
 
     private static func option(_ dict: [String: Any]) -> PortSource.Option? {
@@ -307,7 +354,7 @@ extension BatterySnapshot {
         if let elected = pd.electedPD {
             checks.append(ContractCrossCheck(
                 id: "elected", source: "macOS elected USB-C source",
-                detail: (elected.path.isEmpty ? elected.name : elected.path) + " · may keep a previous charger's value",
+                detail: elected.path.isEmpty ? elected.name : elected.path,
                 voltage: elected.voltage, current: elected.current, status: status(elected.voltage)))
         }
         return checks

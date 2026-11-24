@@ -21,11 +21,18 @@ nonisolated enum PDContractResolver {
     /// Voltage tolerance when comparing a PDO with the PMU setpoint, in mV.
     static let tolerance = 100
 
-    /// Ports in order of likelihood: one with a power budget, then ones with an RDO.
+    /// Ports in order of likelihood: the one supplying power, then one with a power budget,
+    /// then ones with an RDO. When controllers report whether a charger is attached, ports
+    /// without one are left out: their PDOs and RDO are cached from a charger that is gone.
     static func candidates(_ ports: [PDPortState]) -> [PDPortState] {
-        ports.filter { ($0.maxPower ?? 0) > 0 }
-            + ports.filter { ($0.maxPower ?? 0) == 0 && $0.rdoContract != nil }
-            + ports.filter { ($0.maxPower ?? 0) == 0 && $0.rdoContract == nil }
+        let reportsConnection = ports.contains { $0.isConnected != nil }
+        let pool = reportsConnection ? ports.filter { $0.isConnected != false } : ports
+        let supplying = pool.filter(\.isSupplying)
+        let rest = pool.filter { !$0.isSupplying }
+        return supplying
+            + rest.filter { ($0.maxPower ?? 0) > 0 }
+            + rest.filter { ($0.maxPower ?? 0) == 0 && $0.rdoContract != nil }
+            + rest.filter { ($0.maxPower ?? 0) == 0 && $0.rdoContract == nil }
     }
 
     static func resolve(ports: [PDPortState], selectedIndex: Int?, reportsSelection: Bool,

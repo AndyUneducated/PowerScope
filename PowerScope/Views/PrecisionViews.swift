@@ -335,8 +335,8 @@ struct PDLinkCard: View {
                     Divider()
                     ForEach(s.pd.ports) { port in
                         GridRow {
-                            Text("\(port.index)\(port.index == s.pd.activePort?.index ? " (active)" : "")")
-                            Text(port.rdoContract.map { "\(volts($0.voltage)) \(amps($0.current))" } ?? "—")
+                            Text("\(port.index)\(port.index == s.pd.activePort?.index && s.pd.contract != nil ? " (active)" : port.isConnected == false ? " (not connected)" : "")")
+                            Text(port.rdoContract.map { "\(volts($0.voltage)) \(amps($0.current))\(port.isConnected == false ? " (cached)" : "")" } ?? "—")
                             Text(port.maxPower.map { "\($0 / 1000) W" } ?? "—")
                             Text("\(port.counters.attach)")
                             Text("\(port.counters.hardResets)")
@@ -441,7 +441,7 @@ struct PortsCard: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(pd.physicalPorts) { port in
-                        physicalRow(port, contract: pd.contract)
+                        physicalRow(port)
                         Divider().opacity(0.5)
                     }
                 }
@@ -453,46 +453,49 @@ struct PortsCard: View {
             } else {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                     GridRow {
-                        Text("Controller"); Text("Source offers"); Text("EPR"); Text("Request (RDO)"); Text("Budget")
+                        Text("Controller"); Text("Status"); Text("Source offers"); Text("EPR"); Text("Request (RDO)"); Text("Budget")
                     }
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Divider()
                     ForEach(pd.ports) { port in
-                        let active = port.index == pd.activePort?.index
+                        let active = port.index == pd.activePort?.index && pd.contract != nil
+                        let cached = port.isConnected == false
                         GridRow {
                             Label("\(port.index)", systemImage: active ? "bolt.fill" : "circle")
                                 .foregroundStyle(active ? Palette.input : Color.secondary)
-                            Text(offerSummary(port.pdos))
-                            Text(port.pdos.contains { $0.position >= 8 } ? "Yes" : "No")
+                            Text(controllerStatus(port, active: active))
+                                .foregroundStyle(active ? Palette.input : Color.secondary)
+                            Text(offerSummary(port.pdos) + (cached && !port.pdos.isEmpty ? " (cached)" : ""))
+                            Text(port.pdos.isEmpty ? "—" : port.pdos.contains { $0.position >= 8 } ? "Yes" : "No")
                             Text(port.rdoContract.map { "PDO \($0.pdo.position) · \(volts($0.voltage)) \(amps($0.current))" } ?? "—")
                             Text(port.maxPower.map { "\($0 / 1000) W" } ?? "—")
                         }
                         .font(.callout.monospacedDigit())
+                        .foregroundStyle(cached ? Color.secondary : Color.primary)
                     }
                 }
             }
-            Text("macOS does not say which controller drives which physical port, and a port can keep reporting a previous charger until it is replaced. The active controller is the one the contract resolver picked.")
+            Text("A port is in use only when its power source is live (registered). A disconnected charger can leave a cached entry, still marked in use, which is shown as not connected. macOS does not say which controller drives which physical port; the active controller is the one the contract resolver picked.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder
-    private func physicalRow(_ port: PhysicalPort, contract: PDContract?) -> some View {
-        // macOS keeps the "[*]" mark and option of a previous charger on a port until it is
-        // replaced, so a port only counts as in use when its option matches the contract.
-        let marked = port.inUse
-        let matches = marked?.winning.map { w in contract.map { abs($0.voltage - w.voltage) <= 100 } ?? false } ?? false
+    private func physicalRow(_ port: PhysicalPort) -> some View {
+        // Only a registered source is live; macOS keeps a disconnected charger's node,
+        // still marked "[*]", unregistered on the port.
+        let live = port.inUse
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: port.isMagSafe ? "magsafe.batterypack" : "cable.connector")
-                .foregroundStyle(matches ? Palette.input : Color.secondary)
+                .foregroundStyle(live != nil ? Palette.input : Color.secondary)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(port.displayName).font(.callout.weight(.medium))
-                if let source = marked, let w = source.winning, matches {
+                if let source = live, let w = source.winning {
                     Text("In use · \(source.name) \(volts(w.voltage)) \(amps(w.current)) (\(w.power / 1000) W)")
                         .font(.caption).foregroundStyle(Palette.input)
-                } else if let source = marked, let w = source.winning {
-                    Text("Stale · \(source.name) \(volts(w.voltage)) \(amps(w.current)), does not match the current contract (likely a previous charger)")
+                } else if let source = port.stale, let w = source.winning {
+                    Text("Not connected · cached entry from a previous charger (\(source.name) \(volts(w.voltage)) \(amps(w.current)))")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if let w = port.sources.compactMap(\.winning).first {
                     Text("Last reported · \(w.name) \(volts(w.voltage)) \(amps(w.current))")
@@ -502,12 +505,20 @@ struct PortsCard: View {
                 }
             }
             Spacer()
-            if let best = port.sources.max(by: { $0.maxPower < $1.maxPower }), best.maxPower > 0 {
+            if let best = port.inUse, best.maxPower > 0 {
                 Text("Offers up to \(best.maxPower / 1000) W · \(best.options.map { Format.number(Double($0.voltage) / 1000, digits: 0) }.joined(separator: " / ")) V")
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 6)
+    }
+
+    private func controllerStatus(_ port: PDPortState, active: Bool) -> String {
+        switch port.isConnected {
+        case true?: active || port.isSupplying ? "Supplying" : "Connected"
+        case false?: "Not connected"
+        case nil: active ? "Supplying" : "Unknown"
+        }
     }
 
     private func offerSummary(_ pdos: [DecodedPDO]) -> String {

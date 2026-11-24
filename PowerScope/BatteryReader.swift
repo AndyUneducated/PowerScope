@@ -107,6 +107,7 @@ enum BatteryReader {
         }
 
         s.pd = PDState.read(battery: battery)
+        s.pd.externalConnected = s.externalConnected
         s.smc = SMCReadings.read()
         s.gaugeUpdateTime = int(battery["UpdateTime"])
         if let ipd = battery["PowerDistribution"] as? [String: Any] {
