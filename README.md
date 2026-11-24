@@ -12,7 +12,7 @@
 ![USB PD](https://img.shields.io/badge/USB%20PD-3.1%20%C2%B7%20EPR-34C759)
 ![macOS](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)
 ![Xcode](https://img.shields.io/badge/Xcode-27-1575F9?logo=xcode&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.2.0-0A84FF)
+![Version](https://img.shields.io/badge/version-1.3.0-0A84FF)
 [![Tests](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml/badge.svg)](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml)
 
 <img src="docs/screenshots/overview.png" width="760" alt="Overview">
@@ -24,7 +24,7 @@
 ## ✨ Features
 
 ### 🧭 Overview
-- 🔋 **At a glance**: a large charge ring, the state, time to full or time remaining, and a compact power budget bar
+- 🔋 **At a glance**: a two-ring gauge (charge level outside, charging speed inside), the state, time to full or time remaining, and a power budget bar with a legend: ● Mac ● Battery ○ Spare
 - 🗂️ **Three grouped cards** instead of eight tiles: charge (mAh), health (with cycles) and temperature (with its lifetime range); electrical details live on the Charging page
 
 ### 🔋 Battery
@@ -44,7 +44,7 @@
 - 🩺 **Consistency checks**: pack vs cells, gauge vs SMC, telemetry vs SMC, input stability, link stability, data freshness
 - 🔗 **PD link health**: reconnects, hard resets, renegotiations and rejected requests, logged even between samples. Plugging a charger in or out is not an issue: an isolated re-attach and its handshake fold into one "Charger attached" event, and only repeated re-attaches within 2 minutes count; **Clear** resets the issue counts and timeline (the chip's own totals become a baseline, since they cannot be reset)
 - 🔌 **Ports**: every physical USB-C and MagSafe input with the charger actually connected, and every port controller with what its source offers, EPR support, request and power budget; cached entries from a disconnected charger are shown as not connected
-- 🚀 **Fast charging**: judged by measured battery power (≥ 30 W), not by the `IsCharging` flag
+- 🚀 **Charging speed**: judged by measured battery power (fast ≥ 30 W, very fast ≥ 60 W), not by the `IsCharging` flag
 
 ### 📈 History
 - ⏱️ Readings every **1 s**, stored per **5 s window** with average, minimum and maximum
@@ -200,15 +200,19 @@ Then:
 
 ## 🎨 Colors
 
-One rule, defined in `Theme.swift`: **a color says where energy flows and whether anything needs attention.**
+Three rules, defined in `Theme.swift`. Nothing else gets a color.
 
-| Color | Meaning | Examples |
+| Rule | Scale | Where |
 | --- | --- | --- |
-| 🟢 Green | Energy flowing into the battery, brighter when faster | Fast ≥ 30 W, charging, trickle < 10 W |
-| ⚪ Neutral | Normal and calm | Plugged in and paused, full (green check), on battery above 20 % |
-| 🟠 Amber | Needs attention | Battery assisting a weak adapter, ≤ 20 % on battery, PD link problems |
-| 🔴 Red | Act now | ≤ 10 % on battery, critical level |
+| 🔋 **Level** | 🔴 0–10 % → 🟠 20 % → 🟡 40 % → yellow-green 60 % → 🟢 100 %, interpolated | Outer ring, charge bar |
+| ⚡ **Speed** | Power into the battery, 0–100 W: pale chartreuse → green 20 W → mint 40 W → teal 60 W → cyan 80 W → bright sky 100 W, interpolated | Inner ring, status badge, battery figure while charging |
+| ⚠️ **Attention** | ⚪ neutral → 🟠 amber → 🔴 red | Battery assisting, ≤ 20 % / ≤ 10 % on battery, PD link problems, readings out of range |
 
+![Ring states](docs/screenshots/ring-states.png)
+
+- ⭕ **Two rings**: the outer ring is the charge level; the inner ring is charging speed on a fixed 100 W scale, so chargers compare directly. It is hidden when the battery is idle or discharging, and drawn backwards in amber when the battery helps a charger that is not enough
+- 🚀 **Speed tiers**: trickle < 10 W, charging 10–30 W, fast 30–60 W, very fast ≥ 60 W
+- 🎯 The speed scale's top is a bright sky blue kept apart from the charts' input blue
 - 📊 **Chart series** are colored by source everywhere: 🔵 supply side, 🟢 battery, 🟣 system load, ⚪ temperature
 - 🧮 **Metric tiles** stay neutral and only turn amber or red when a value is off (temperature ≥ 40 / 45 °C, health < 80 %, cycles past design)
 - 🎛️ The app follows the system accent color
@@ -224,7 +228,7 @@ One rule, defined in `Theme.swift`: **a color says where energy flows and whethe
 ---
 
 ## 🧪 Tests
-68 Swift Testing tests in `PowerScopeTests/`, run on every push by [GitHub Actions](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml). They replay PD data captured from a real Mac with Apple's 140 W adapter over three cables:
+81 Swift Testing tests in `PowerScopeTests/`, run on every push by [GitHub Actions](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml). They replay PD data captured from a real Mac with Apple's 140 W adapter over three cables:
 - 🔬 **Decoding**: 60 W, 94 W and 140 W PDOs, EPR AVS, PPS, source flags, EPR positions, RDOs
 - 🧭 **Contract resolution**: stale RDO, RDO catching up, 5 V fallback, stale power budget, PMU vs selection, AVS, PPS, RDO-only
 - 🚨 **Event detection**: counter deltas, counter resets, new ports, contract transitions, current appearing, the 60 s fold window
@@ -234,7 +238,8 @@ One rule, defined in `Theme.swift`: **a color says where energy flows and whethe
 - 🧹 **Clearing issues**: counts since the clear, no baseline, controller resets after a clear
 - 🔋 **Battery current source**: SMC over a stale gauge, gauge fallback, energy-balance guard
 - 🔌 **Plug-in vs flaky link**: the real 100 W plug-in folds into one non-issue event, the failing cable's repeated re-attaches all count, unplugging is not an issue
-- 🎨 **Color rules**: charging speed, battery thresholds, battery assisting, reading levels
+- 🎨 **Color rules**: level and speed scales at every stop, interpolation and clamping, the speed hue sweep, speed tiers, battery thresholds, battery assisting, reading levels
+- ⭕ **Ring and budget bar**: inner ring scale, cap and visibility, the amber reversed ring, captions, and the Mac / Battery / Spare legend
 - 🔌 **Ports and stale data**: only live (registered) sources count as in use; controllers without an attached charger are never used for the contract, and there is no contract on battery
 - 📊 History downsampling, formatting and registry parsing
 
@@ -265,7 +270,7 @@ open /Applications/PowerScope.app
 - 🧭 `open PowerScope.app --args -page charging` opens a given page (`overview`, `charging`, `history`, `battery`, `raw`)
 
 ## 🚀 Releasing
-- 🏷️ Versions follow [Semantic Versioning](https://semver.org); the current version is **1.2.0**
+- 🏷️ Versions follow [Semantic Versioning](https://semver.org); the current version is **1.3.0**
 - 📝 Bump `MARKETING_VERSION` in the project and add notes in `docs/releases/vX.Y.Z.md`
 - 🔖 Push a tag `vX.Y.Z`: the [Release workflow](.github/workflows/release.yml) checks the tag matches the app version, runs the tests, builds the app and publishes `PowerScope-vX.Y.Z.zip` with its SHA-256
 
@@ -280,7 +285,7 @@ PowerScope/
 ├── BatteryReader.swift          IOKit and IOPowerSources reading
 ├── BatterySnapshot.swift        One reading and its derived values
 ├── PowerSample.swift            SwiftData models (PowerSample, PDEvent)
-├── Theme.swift                  Color rules
+├── Theme.swift                  Color rules and scales
 ├── Format.swift                 Number and time formatting
 ├── Export/CSVExport.swift       CSV export
 ├── PowerDelivery/

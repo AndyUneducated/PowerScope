@@ -67,13 +67,21 @@ struct LifetimeInfo {
 }
 
 enum ChargeMode {
-    case noBattery, onBattery, supplementing, fastCharging, charging, slowCharging, pluggedNotCharging, full
+    case noBattery, onBattery, supplementing, veryFastCharging, fastCharging, charging, slowCharging, pluggedNotCharging, full
+
+    var isCharging: Bool {
+        switch self {
+        case .veryFastCharging, .fastCharging, .charging, .slowCharging: true
+        default: false
+        }
+    }
 
     var title: String {
         switch self {
         case .noBattery: "No battery"
         case .onBattery: "On battery"
         case .supplementing: "Adapter insufficient · battery assisting"
+        case .veryFastCharging: "Very fast charging"
         case .fastCharging: "Fast charging"
         case .charging: "Charging"
         case .slowCharging: "Slow / trickle charging"
@@ -86,6 +94,8 @@ enum ChargeMode {
 struct BatterySnapshot {
     /// Charging power (W) at or above which charging counts as fast.
     static let fastChargeWatts = 30.0
+    /// Charging power (W) at or above which charging counts as very fast.
+    static let veryFastChargeWatts = 60.0
     /// Charging power (W) below which charging counts as slow / trickle.
     static let slowChargeWatts = 10.0
 
@@ -208,6 +218,7 @@ struct BatterySnapshot {
         // current is flowing into the battery.
         let watts = batteryPowerW ?? 0
         if watts > 0.5 {
+            if watts >= Self.veryFastChargeWatts { return .veryFastCharging }
             if watts >= Self.fastChargeWatts { return .fastCharging }
             if watts >= Self.slowChargeWatts { return .charging }
             return .slowCharging
@@ -219,7 +230,7 @@ struct BatterySnapshot {
     }
 
     var batterySymbol: String {
-        if mode == .fastCharging || mode == .charging || mode == .slowCharging {
+        if mode.isCharging {
             return "battery.100percent.bolt"
         }
         switch percent {
@@ -233,7 +244,7 @@ struct BatterySnapshot {
 
     var remainingTimeText: String {
         switch mode {
-        case .fastCharging, .charging, .slowCharging:
+        case .veryFastCharging, .fastCharging, .charging, .slowCharging:
             if let timeToFull { return "About \(Format.minutes(timeToFull)) until full" }
             return "Calculating time until full…"
         case .onBattery, .supplementing:

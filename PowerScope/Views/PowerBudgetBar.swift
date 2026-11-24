@@ -3,7 +3,7 @@ import SwiftUI
 /// Where the charger's power goes, against what the contract allows.
 ///
 /// One bar the width of the charger's budget (the contract power, else the adapter rating),
-/// split into system load and battery charging, with the unused headroom left empty. The
+/// split into the Mac's own use and battery charging, with the spare capacity left empty. The
 /// measured input equals system load plus battery charging; the reported conversion loss is
 /// outside that measurement, so it is not part of the bar. When the system needs more than the charger gives, the battery makes up the
 /// difference and the bar turns amber.
@@ -16,6 +16,13 @@ struct PowerBudget: Equatable {
     var used: Double { system + battery }
     var headroom: Double { max(0, budget - used) }
     var usedFraction: Double { budget > 0 ? min(1, used / budget) : 0 }
+
+    enum Part { case mac, battery, spare }
+
+    /// The legend under the bar, in the bar's order: the Mac, the battery, then what is left.
+    var legend: [(kind: Part, label: String, watts: Double)] {
+        [(.mac, "Mac", system), (.battery, "Battery", battery), (.spare, "Spare", headroom)]
+    }
 
     init(budget: Double, system: Double, battery: Double, assist: Double) {
         self.budget = budget
@@ -51,8 +58,6 @@ struct PowerBudgetBar: View {
                 if b.assist > 0 {
                     Label("Battery adds \(Self.w(b.assist))", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(Tone.attention.color)
-                } else if !compact {
-                    Text("Headroom \(Self.w(b.headroom))")
                 }
             }
             .font(.caption)
@@ -75,14 +80,13 @@ struct PowerBudgetBar: View {
             }
             .frame(height: compact ? 10 : 16)
 
-            if !compact {
-                HStack(spacing: 14) {
-                    legend(Palette.system, "System \(Self.w(b.system))")
-                    legend(Palette.battery, "Battery \(Self.w(b.battery))")
+            HStack(spacing: 14) {
+                ForEach(b.legend, id: \.label) { item in
+                    legend(item.kind, "\(item.label) \(Self.w(item.watts))")
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
     }
@@ -91,9 +95,13 @@ struct PowerBudgetBar: View {
         Rectangle().fill(color.gradient).frame(width: max(0, width))
     }
 
-    private func legend(_ color: Color, _ text: String) -> some View {
+    private func legend(_ kind: PowerBudget.Part, _ text: String) -> some View {
         HStack(spacing: 5) {
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 8, height: 8)
+            switch kind {
+            case .mac: Circle().fill(Palette.system).frame(width: 8, height: 8)
+            case .battery: Circle().fill(Palette.battery).frame(width: 8, height: 8)
+            case .spare: Circle().strokeBorder(Color.secondary, lineWidth: 1).frame(width: 8, height: 8)
+            }
             Text(text).monospacedDigit()
         }
     }

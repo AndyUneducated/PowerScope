@@ -16,8 +16,8 @@ struct MenuBarPanel: View {
         let problems = isVisible ? monitor.problemCount(within: 600) : frozenProblems
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
-                RingGauge(percent: s.percent, tint: s.tone.color, lineWidth: 7, fontSize: 20)
-                    .frame(width: 64, height: 64)
+                BatteryRing(snapshot: s, showCaption: false, lineWidth: 7, fontSize: 17)
+                    .frame(width: 72, height: 72)
                 VStack(alignment: .leading, spacing: 4) {
                     StatusBadge(snapshot: s)
                     Text(s.remainingTimeText).font(.callout)

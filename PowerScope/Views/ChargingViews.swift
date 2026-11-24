@@ -106,7 +106,7 @@ struct NowCard: View {
         let watts = s.batteryPowerW ?? 0
         let caption: String
         switch s.mode {
-        case .fastCharging, .charging, .slowCharging:
+        case .veryFastCharging, .fastCharging, .charging, .slowCharging:
             caption = s.timeToFull.map { "\(Format.minutes($0)) until full" } ?? "charging"
         case .full: caption = "idle · full"
         case .pluggedNotCharging: caption = "idle · charging paused"
@@ -115,7 +115,7 @@ struct NowCard: View {
         case .noBattery: caption = "no battery"
         }
         return HeroValue(title: "Battery", value: Format.signed(watts, digits: 1), unit: "W", caption: caption,
-                         color: s.tone.isNeutral ? .primary : s.tone.color)
+                         color: s.stateColor ?? .primary)
     }
 
     private func detailLine(_ s: BatterySnapshot) -> some View {

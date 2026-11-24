@@ -108,28 +108,127 @@ struct InfoGrid: View {
     }
 }
 
-struct RingGauge: View {
+/// The inner ring of `BatteryRing`: power into the battery on a fixed 0–100 W scale, or,
+/// drawn backwards in amber, the power the battery adds when the charger is not enough.
+struct RingSpeed: Equatable {
+    var fraction: Double
+    var rgb: RGB
+    var reversed: Bool
+
+    init(fraction: Double, rgb: RGB, reversed: Bool) {
+        self.fraction = fraction
+        self.rgb = rgb
+        self.reversed = reversed
+    }
+
+    /// Nil when the battery is neither charging nor assisting.
+    init?(_ s: BatterySnapshot) {
+        let full = ColorScale.speedFullScaleWatts
+        if let watts = s.chargingWatts {
+            self.init(fraction: min(1, watts / full), rgb: ColorScale.speed.rgb(at: watts), reversed: false)
+        } else if s.mode == .supplementing, let watts = s.batteryPowerW, watts < 0 {
+            self.init(fraction: min(1, -watts / full), rgb: ColorScale.orange, reversed: true)
+        } else {
+            return nil
+        }
+    }
+}
+
+extension BatterySnapshot {
+    /// The short line under the percentage in the ring.
+    var ringCaption: String? {
+        let watts = Format.number(batteryPowerW.map(abs), digits: 0, unit: "W")
+        switch mode {
+        case .veryFastCharging: return "\(watts) · Very fast"
+        case .fastCharging: return "\(watts) · Fast"
+        case .charging: return "\(watts) · Charging"
+        case .slowCharging: return "\(watts) · Trickle"
+        case .supplementing: return "−\(watts) · Assisting"
+        case .full: return "Full"
+        case .pluggedNotCharging: return "Paused"
+        case .onBattery: return "On battery"
+        case .noBattery: return nil
+        }
+    }
+}
+
+/// Two rings: the outer one is the charge level, colored by level; the inner one is the
+/// charging speed (see `RingSpeed`), hidden when the battery is idle or discharging.
+struct BatteryRing: View {
     let percent: Int
-    let tint: Color
+    var speed: RingSpeed?
+    var caption: String?
     var lineWidth: CGFloat = 12
     var fontSize: CGFloat = 34
 
+    init(snapshot s: BatterySnapshot, showCaption: Bool = true, lineWidth: CGFloat = 12, fontSize: CGFloat = 34) {
+        percent = s.percent
+        speed = RingSpeed(s)
+        caption = showCaption ? s.ringCaption : nil
+        self.lineWidth = lineWidth
+        self.fontSize = fontSize
+    }
+
+    private var level: Double { Double(min(max(percent, 0), 100)) / 100 }
+
+    /// A light band in the middle of the arc and the full color at both ends, so a full
+    /// circle has no seam where it closes.
+    private static func sheen(_ color: Color, from start: Double, to end: Double) -> AngularGradient {
+        AngularGradient(colors: [color, color.mix(with: .white, by: 0.3), color], center: .center,
+                        startAngle: .degrees(360 * start), endAngle: .degrees(360 * max(end, start + 0.01)))
+    }
+
     var body: some View {
+        let levelColor = ColorScale.level.color(at: Double(percent))
+        let innerWidth = lineWidth * 0.5
+        let inset = lineWidth * 0.75 + 3
         ZStack {
-            Circle().stroke(tint.opacity(0.15), lineWidth: lineWidth)
+            Circle().stroke(levelColor.opacity(0.15), lineWidth: lineWidth)
             Circle()
-                .trim(from: 0, to: CGFloat(min(max(percent, 0), 100)) / 100)
-                .stroke(tint.gradient, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .trim(from: 0, to: level)
+                .stroke(Self.sheen(levelColor, from: 0, to: level),
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .animation(.easeInOut, value: percent)
-            HStack(alignment: .firstTextBaseline, spacing: 1) {
-                Text("\(percent)")
-                    .font(.system(size: fontSize, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                Text("%").font(.system(size: fontSize * 0.45, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
+
+            Group {
+                Circle().stroke(Color.primary.opacity(0.06), lineWidth: innerWidth)
+                if let speed {
+                    let color = speed.rgb.color
+                    let f = max(speed.fraction, 0.01)
+                    Circle()
+                        .trim(from: speed.reversed ? 1 - f : 0, to: speed.reversed ? 1 : f)
+                        .stroke(Self.sheen(color, from: speed.reversed ? 1 - f : 0, to: speed.reversed ? 1 : f),
+                                style: StrokeStyle(lineWidth: innerWidth, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
             }
+            .padding(inset)
+
+            VStack(spacing: 2) {
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text("\(percent)")
+                        .font(.system(size: fontSize, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                    Text("%").font(.system(size: fontSize * 0.45, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+                if let caption {
+                    // While charging, a bolt in the speed color leads the caption.
+                    let bolt = speed.flatMap { $0.reversed ? nil : $0.rgb.color }
+                    ((bolt.map { Text(Image(systemName: "bolt.fill")).foregroundStyle($0) + Text(" ") } ?? Text(""))
+                        + Text(caption).foregroundStyle(.secondary))
+                        .font(.system(size: max(10, fontSize * 0.3), weight: .medium))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+            }
+            .padding(inset + innerWidth)
         }
+        .animation(.easeInOut, value: percent)
+        .animation(.easeInOut, value: speed)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Battery \(percent) percent" + (caption.map { ", \($0)" } ?? ""))
     }
 }
 
@@ -137,16 +236,16 @@ struct StatusBadge: View {
     let snapshot: BatterySnapshot
 
     var body: some View {
-        let tone = snapshot.tone
+        let color = snapshot.stateColor
         Label {
-            Text(snapshot.mode.title).foregroundStyle(tone.foreground)
+            Text(snapshot.mode.title).foregroundStyle(color ?? .primary)
         } icon: {
-            Image(systemName: snapshot.statusSymbol).foregroundStyle(snapshot.statusSymbolColor)
+            Image(systemName: snapshot.statusSymbol).foregroundStyle(color ?? .primary)
         }
         .font(.callout.weight(.semibold))
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
-        .background(Capsule().fill(tone.isNeutral ? Color.primary.opacity(0.08) : tone.color.opacity(0.16)))
+        .background(Capsule().fill(color?.opacity(0.16) ?? Color.primary.opacity(0.08)))
     }
 }
 

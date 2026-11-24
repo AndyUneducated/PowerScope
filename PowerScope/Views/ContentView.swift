@@ -73,7 +73,7 @@ struct OverviewPage: View {
 
     private func headline(_ s: BatterySnapshot) -> String {
         switch s.mode {
-        case .fastCharging, .charging, .slowCharging:
+        case .veryFastCharging, .fastCharging, .charging, .slowCharging:
             s.timeToFull.map { "\(Format.minutes($0)) until full" } ?? "Charging"
         case .onBattery, .supplementing:
             s.timeToEmpty.map { "\(Format.minutes($0)) remaining" } ?? "Estimating time remaining…"
@@ -84,16 +84,18 @@ struct OverviewPage: View {
         }
     }
 
-    private func subline(_ s: BatterySnapshot) -> String {
-        let battery = "Battery " + Format.signed(s.batteryPowerW, digits: 1, unit: "W")
+    /// What the budget bar does not already show: on battery the system load, on a charger
+    /// the contract voltage. Nil when there is nothing to add.
+    private func subline(_ s: BatterySnapshot) -> String? {
         guard s.externalConnected else {
-            return "\(battery) · system \(Format.number(s.systemLoadW, digits: 1, unit: "W"))"
+            return "Battery \(Format.signed(s.batteryPowerW, digits: 1, unit: "W")) · system \(Format.number(s.systemLoadW, digits: 1, unit: "W"))"
         }
-        var parts = ["Charger " + Format.number(s.inputPowerW, digits: 1, unit: "W"), battery]
-        if let c = s.pd.contract {
-            parts.append("\(Format.number(Double(c.voltage) / 1000, digits: c.voltage % 1000 == 0 ? 0 : 2)) V contract")
+        guard PowerBudget(s) != nil else {
+            return "Battery " + Format.signed(s.batteryPowerW, digits: 1, unit: "W")
         }
-        return parts.joined(separator: " · ")
+        return s.pd.contract.map {
+            "USB-C PD contract \(Format.number(Double($0.voltage) / 1000, digits: $0.voltage % 1000 == 0 ? 0 : 2)) V"
+        }
     }
 
     private func temperatureCaption(_ s: BatterySnapshot) -> String {
@@ -110,16 +112,18 @@ struct OverviewPage: View {
         PageScroll {
             Card {
                 HStack(alignment: .center, spacing: 28) {
-                    RingGauge(percent: s.percent, tint: s.tone.color, lineWidth: 14, fontSize: 40)
-                        .frame(width: 150, height: 150)
+                    BatteryRing(snapshot: s, lineWidth: 14, fontSize: 38)
+                        .frame(width: 164, height: 164)
                     VStack(alignment: .leading, spacing: 10) {
                         StatusBadge(snapshot: s)
                         Text(headline(s))
                             .font(.system(size: 28, weight: .semibold, design: .rounded))
                             .monospacedDigit()
-                        Text(subline(s))
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                        if let line = subline(s) {
+                            Text(line)
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                         if let budget = PowerBudget(s) {
                             PowerBudgetBar(budget: budget, compact: true)
                                 .frame(maxWidth: 460)
@@ -134,7 +138,7 @@ struct OverviewPage: View {
                             value: Format.int(s.remainingCapacity), unit: "mAh",
                             caption: s.fullChargeCapacity.map { "of \($0) mAh when full" } ?? "",
                             progress: Double(s.percent) / 100, tone: .neutral,
-                            progressTint: s.tone.isNeutral ? Color.gray : s.tone.color)
+                            progressTint: s.levelColor)
                 SummaryCard(title: "Health", symbol: "heart",
                             value: Format.number(s.healthPercent, digits: 1), unit: "%",
                             caption: [s.cycleCount.map { c in "\(c)" + (s.designCycleCount.map { " of \($0)" } ?? "") + " cycles" },
