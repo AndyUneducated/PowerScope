@@ -12,7 +12,7 @@
 ![USB PD](https://img.shields.io/badge/USB%20PD-3.1%20%C2%B7%20EPR-34C759)
 ![macOS](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)
 ![Xcode](https://img.shields.io/badge/Xcode-27-1575F9?logo=xcode&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.0.0-0A84FF)
+![Version](https://img.shields.io/badge/version-1.0.1-0A84FF)
 [![Tests](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml/badge.svg)](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml)
 
 <img src="docs/screenshots/overview.png" width="760" alt="Overview">
@@ -37,7 +37,7 @@
 - 📡 **Voltage sources**: every voltage labeled as measured, setpoint or derived, with where it comes from
 - 🩺 **Consistency checks**: pack vs cells, gauge vs SMC, telemetry vs SMC, input stability, link stability, data freshness
 - 🔗 **PD link health**: reconnects, hard resets, renegotiations and rejected requests, logged even between samples
-- 🔌 **Ports**: every physical USB-C and MagSafe input with the charger it reports, and every port controller with what its source offers, EPR support, request and power budget; stale entries from a previous charger are marked
+- 🔌 **Ports**: every physical USB-C and MagSafe input with the charger actually connected, and every port controller with what its source offers, EPR support, request and power budget; cached entries from a disconnected charger are shown as not connected
 - 🚀 **Fast charging**: judged by measured battery power (≥ 30 W), not by the `IsCharging` flag
 
 ### 📈 History
@@ -159,12 +159,14 @@ macOS reports the contract in several places, and none is reliable alone:
 | 🧭 Power manager (`UsbHvcHvcIndex`) | Which PDO is selected | Reads 255 while the link re-attaches |
 | 📟 PMU setpoint (`IPDInputVoltage`) | The input voltage the system is configured for | Falls back to 5 V without a contract |
 | 📨 Port controller RDO | The request, including operating current | Lags: kept the old 20 V request for minutes after an EPR 28 V contract started |
-| 🗳️ Elected source (`WinningPowerSourceOption`) | macOS's chosen option per port | Can keep a previous charger's value |
+| 🗳️ Elected source (`WinningPowerSourceOption`) | macOS's chosen option per port | A disconnected charger's entry stays, unregistered; only registered entries are used |
 
 `PDContractResolver` uses them in this order:
 1. 🥇 The power manager's selection, on a port where that PDO agrees with the PMU setpoint
 2. 🥈 Otherwise the PDO whose voltage matches the PMU setpoint
 3. 🥉 Otherwise the RDO, flagged as unconfirmed
+
+Only controllers with a charger attached (non-zero PD state or source types) are considered: a controller keeps its last charger's PDOs and RDO after it is unplugged, and those cached values must never become the contract. Without external power there is no contract at all.
 
 Then:
 - 🔢 PDO positions follow the spec: SPR objects at 1–7, EPR objects from 8
@@ -215,7 +217,7 @@ One rule, defined in `Theme.swift`: **a color says where energy flows and whethe
 ---
 
 ## 🧪 Tests
-44 Swift Testing tests in `PowerScopeTests/`, run on every push by [GitHub Actions](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml). They replay PD data captured from a real Mac with Apple's 140 W adapter over three cables:
+53 Swift Testing tests in `PowerScopeTests/`, run on every push by [GitHub Actions](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml). They replay PD data captured from a real Mac with Apple's 140 W adapter over three cables:
 - 🔬 **Decoding**: 60 W, 94 W and 140 W PDOs, EPR AVS, PPS, source flags, EPR positions, RDOs
 - 🧭 **Contract resolution**: stale RDO, RDO catching up, 5 V fallback, stale power budget, PMU vs selection, AVS, PPS, RDO-only
 - 🚨 **Event detection**: counter deltas, counter resets, new ports, contract transitions, current appearing, the 60 s fold window
@@ -223,6 +225,7 @@ One rule, defined in `Theme.swift`: **a color says where energy flows and whethe
 - 💾 **Storage**: a first-release store opening with the current models (migration), and sample round trips
 - 📤 **CSV**: escaping, column values, empty unknowns, event ordering and quoting
 - 🎨 **Color rules**: charging speed, battery thresholds, battery assisting, reading levels
+- 🔌 **Ports and stale data**: only live (registered) sources count as in use; controllers without an attached charger are never used for the contract, and there is no contract on battery
 - 📊 History downsampling, formatting and registry parsing
 
 ```bash
@@ -252,7 +255,7 @@ open /Applications/PowerScope.app
 - 🧭 `open PowerScope.app --args -page charging` opens a given page (`overview`, `charging`, `history`, `battery`, `raw`)
 
 ## 🚀 Releasing
-- 🏷️ Versions follow [Semantic Versioning](https://semver.org); the current version is **1.0.0**
+- 🏷️ Versions follow [Semantic Versioning](https://semver.org); the current version is **1.0.1**
 - 📝 Bump `MARKETING_VERSION` in the project and add notes in `docs/releases/vX.Y.Z.md`
 - 🔖 Push a tag `vX.Y.Z`: the [Release workflow](.github/workflows/release.yml) checks the tag matches the app version, runs the tests, builds the app and publishes `PowerScope-vX.Y.Z.zip` with its SHA-256
 
