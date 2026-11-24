@@ -66,9 +66,9 @@
 ## 🏗️ Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Sources["🍎 macOS data sources"]
-        direction TB
+        direction LR
         B["AppleSmartBattery<br/>Pack · Bank · Cells"]
         PC["PortControllerInfo<br/>PDOs · RDO · counters"]
         CH["AppleChargerData"]
@@ -78,7 +78,7 @@ flowchart LR
     end
 
     subgraph Read["📥 Reading"]
-        direction TB
+        direction LR
         BR["BatteryReader"]
         PD["PDState + PDDecoder"]
         RES["PDContractResolver"]
@@ -86,7 +86,7 @@ flowchart LR
     end
 
     subgraph Core["🧠 State"]
-        direction TB
+        direction LR
         SNAP["BatterySnapshot<br/>+ cross-checks"]
         MON["BatteryMonitor<br/>@Observable · 1 Hz + IOKit notifications"]
         EV["PD event tracker"]
@@ -94,13 +94,13 @@ flowchart LR
     end
 
     subgraph Store["💾 SwiftData"]
-        direction TB
+        direction LR
         PSM["PowerSample"]
         PDE["PDEvent"]
     end
 
     subgraph UI["🖥️ SwiftUI"]
-        direction TB
+        direction LR
         MAIN["Main window<br/>5 pages"]
         MB["Menu bar<br/>label + panel"]
         TH["Theme<br/>color rules"]
