@@ -258,3 +258,42 @@ struct CollapsibleCard<Content: View>: View {
         )
     }
 }
+
+/// One grouped reading on the Overview: a large value, a progress bar and a line of context.
+struct SummaryCard: View {
+    let title: String
+    let symbol: String
+    let value: String
+    var unit: String = ""
+    var caption: String
+    var progress: Double?
+    var tone: Tone = .neutral
+    var progressTint: Color?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: symbol)
+                .font(.callout)
+                .foregroundStyle(tone.isNeutral ? Color.secondary : tone.color)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value)
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(tone.foreground)
+                    .contentTransition(.numericText())
+                if !unit.isEmpty { Text(unit).font(.callout).foregroundStyle(.secondary) }
+            }
+            if let progress {
+                ProgressView(value: min(max(progress, 0), 1))
+                    .tint(progressTint ?? (tone.isNeutral ? Color.gray : tone.color))
+            }
+            Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+    }
+}

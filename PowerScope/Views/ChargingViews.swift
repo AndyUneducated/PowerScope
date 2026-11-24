@@ -21,49 +21,118 @@ struct ChargingPage: View {
 
 // MARK: - Now
 
+/// A large number with its label and one line of context; the Now card's main readings.
+struct HeroValue: View {
+    let title: String
+    let value: String
+    var unit: String = ""
+    var caption: String?
+    var color: Color = .primary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.callout).foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(value)
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(color)
+                    .contentTransition(.numericText())
+                if !unit.isEmpty {
+                    Text(unit).font(.title3).foregroundStyle(.secondary)
+                }
+            }
+            Text(caption ?? " ").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct NowCard: View {
     @Environment(BatteryMonitor.self) private var monitor
 
     var body: some View {
         let s = monitor.snapshot
-        let contract = s.pd.contract
-        Card(title: "Now", symbol: "bolt.fill") {
+        Card {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 StatusBadge(snapshot: s)
-                Text(s.remainingTimeText).foregroundStyle(.secondary)
+                Text("\(s.percent) % · \(s.externalConnected ? "on adapter" : "on battery")")
+                    .foregroundStyle(.secondary)
                 Spacer()
                 linkStatus(s)
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-                MetricTile(title: "Battery power", value: Format.signed(s.batteryPowerW, digits: 1), unit: "W",
-                           symbol: "battery.100percent.bolt", footnote: "+ in / − out")
-                MetricTile(title: "Negotiated", value: contract.map { volts($0.voltage) } ?? "—",
-                           symbol: "bolt.horizontal",
-                           footnote: contract.map { c in
-                               (c.current == nil ? "≤ " : "") + amps(c.displayCurrent) + " · " + Format.number(c.powerW, digits: 0, unit: "W")
-                           } ?? (s.externalConnected ? "No PD contract" : "Not on external power"))
-                MetricTile(title: "Input power", value: Format.number(s.inputPowerW, digits: 1), unit: "W",
-                           symbol: "powerplug",
-                           footnote: s.inputVoltageV.map { "\(Format.number($0, digits: 2)) V · \(Format.number(s.inputCurrentA, digits: 2)) A" })
-                MetricTile(title: "System load", value: Format.number(s.systemLoadW, digits: 1), unit: "W", symbol: "cpu")
+            HStack(alignment: .top, spacing: 16) {
+                if s.externalConnected {
+                    HeroValue(title: "Charger delivers", value: Format.number(s.inputPowerW, digits: 1), unit: "W",
+                              caption: s.inputVoltageV.map { "\(Format.number($0, digits: 2)) V · \(Format.number(s.inputCurrentA, digits: 2)) A" },
+                              color: Palette.input)
+                    contractHero(s)
+                } else {
+                    HeroValue(title: "Time remaining", value: s.timeToEmpty.map(Format.minutes) ?? "—",
+                              caption: "at the current load")
+                    HeroValue(title: "System load", value: Format.number(s.systemLoadW, digits: 1), unit: "W",
+                              caption: "drawn from the battery", color: Palette.system)
+                }
+                batteryHero(s)
             }
 
-            InfoGrid(rows: [
-                ("Battery voltage", Format.number(s.voltageV, digits: 3, unit: "V")),
-                ("Battery current", Format.signed(s.currentA, digits: 3, unit: "A")),
-                ("Time until full", s.timeToFull.map(Format.minutes) ?? "—"),
-                ("Time remaining", s.timeToEmpty.map(Format.minutes) ?? "—"),
-                ("Fast charging", fastChargeText(s)),
-                ("Adapter conversion loss", Format.number(s.adapterLossW, digits: 2, unit: "W")),
-            ])
+            if let budget = PowerBudget(s) {
+                PowerBudgetBar(budget: budget)
+            }
 
-            if contract?.rdo?.capabilityMismatch == true {
+            detailLine(s)
+
+            if s.pd.contract?.rdo?.capabilityMismatch == true {
                 Label("Capability mismatch: the Mac wants more power than this charger offers.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.callout).foregroundStyle(Tone.attention.color)
             }
         }
+    }
+
+    private func contractHero(_ s: BatterySnapshot) -> some View {
+        guard let c = s.pd.contract else {
+            return HeroValue(title: "Negotiated", value: "—", caption: "No USB PD contract")
+        }
+        let current = c.displayCurrent.map { (c.current == nil ? "≤ " : "") + Format.number(Double($0) / 1000, digits: 2) + " A" }
+        return HeroValue(title: "Negotiated",
+                         value: Format.number(Double(c.voltage) / 1000, digits: c.voltage % 1000 == 0 ? 0 : 2), unit: "V",
+                         caption: [current, c.powerW.map { "contract up to " + PowerBudgetBar.w($0) }]
+                            .compactMap { $0 }.joined(separator: " · "))
+    }
+
+    private func batteryHero(_ s: BatterySnapshot) -> some View {
+        let watts = s.batteryPowerW ?? 0
+        let caption: String
+        switch s.mode {
+        case .fastCharging, .charging, .slowCharging:
+            caption = s.timeToFull.map { "\(Format.minutes($0)) until full" } ?? "charging"
+        case .full: caption = "idle · full"
+        case .pluggedNotCharging: caption = "idle · charging paused"
+        case .supplementing: caption = "helping the charger"
+        case .onBattery: caption = "discharging"
+        case .noBattery: caption = "no battery"
+        }
+        return HeroValue(title: "Battery", value: Format.signed(watts, digits: 1), unit: "W", caption: caption,
+                         color: s.tone.isNeutral ? .primary : s.tone.color)
+    }
+
+    private func detailLine(_ s: BatterySnapshot) -> some View {
+        var items = ["Battery \(Format.number(s.voltageV, digits: 2, unit: "V")) · \(Format.signed(s.currentA, digits: 2, unit: "A"))"]
+        // System load is already in the budget bar's legend when on external power.
+        if !s.externalConnected || PowerBudget(s) == nil {
+            items.append("System load \(Format.number(s.systemLoadW, digits: 1, unit: "W"))")
+        }
+        if let loss = s.adapterLossW, loss > 0.05 { items.append("Conversion loss \(Format.number(loss, digits: 1, unit: "W"))") }
+        if let t = s.temperature { items.append("Temperature \(Format.number(t, digits: 1, unit: "°C"))") }
+        return HStack(spacing: 18) {
+            ForEach(items, id: \.self) { Text($0) }
+            Spacer(minLength: 0)
+        }
+        .font(.callout.monospacedDigit())
+        .foregroundStyle(.secondary)
+        .padding(.top, 2)
     }
 
     @ViewBuilder
@@ -77,14 +146,6 @@ struct NowCard: View {
         } else if s.pd.contract != nil {
             Label("PD link stable", systemImage: "checkmark.circle")
                 .font(.callout).foregroundStyle(.secondary)
-        }
-    }
-
-    private func fastChargeText(_ s: BatterySnapshot) -> String {
-        switch s.mode {
-        case .fastCharging: "Yes (≥ \(Int(BatterySnapshot.fastChargeWatts)) W)"
-        case .charging, .slowCharging: "No (< \(Int(BatterySnapshot.fastChargeWatts)) W)"
-        default: "Not charging"
         }
     }
 }
@@ -352,7 +413,9 @@ struct ChargeDetailsCard: View {
                 ("Not-charging reason", Format.hex(s.notChargingReason)),
                 ("Slow-charging reason", Format.hex(s.slowChargingReason)),
                 ("Thermally limited time", Format.int(s.thermallyLimitedTime, unit: "s")),
-                ("Instant current", Format.signed(s.instantAmperage.map { Double($0) / 1000 }, digits: 3, unit: "A")),
+                ("Battery current (SMC, live)", Format.signed(s.smc.batteryCurrent, digits: 3, unit: "A")),
+                ("Battery current (gauge)", Format.signed(s.gaugeCurrentA, digits: 3, unit: "A")),
+                ("Instant current (gauge)", Format.signed(s.instantAmperage.map { Double($0) / 1000 }, digits: 3, unit: "A")),
                 ("SMC input power (PDTR)", Format.number(s.smc.dcInPower, digits: 2, unit: "W")),
                 ("Estimated wall power", Format.number(s.telemetry.wallEnergyEstimate.map { Double($0) / 1000 }, digits: 2, unit: "W")),
                 ("Adapter Family Code", Format.hex(s.adapter?.familyCode)),

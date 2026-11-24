@@ -51,3 +51,46 @@ struct ThemeTests {
         #expect(ReadingLevel.cycles(1000, design: 1000) == .attention)
     }
 }
+
+@Suite("Battery current source")
+struct BatteryCurrentTests {
+    /// Captured right after plugging back in: the gauge still reported −1.474 A from the
+    /// unplugged period for over 30 s while the SMC showed the battery idle.
+    @Test func smcWinsOverAStaleGauge() {
+        var s = BatterySnapshot()
+        s.hasBattery = true
+        s.externalConnected = true
+        s.percent = 100
+        s.fullyCharged = true
+        s.voltage = 13007
+        s.amperage = -1474
+        s.smc.batteryVoltage = 13.093
+        s.smc.batteryCurrent = 0
+        #expect(s.currentA == 0)
+        #expect(s.batteryPowerW == 0)
+        #expect(s.gaugeCurrentA == -1.474)
+        #expect(s.mode == .full)            // not "battery assisting"
+    }
+
+    /// If the SMC's sign ever disagreed with the energy balance, the gauge is used instead.
+    @Test func energyBalanceGuardsTheSign() {
+        var s = BatterySnapshot()
+        s.externalConnected = true
+        s.voltage = 12000
+        s.amperage = 2500                     // gauge: charging
+        s.telemetry.systemPowerIn = 60_000    // 60 W in
+        s.telemetry.systemLoad = 30_000       // 30 W used, so about 30 W into the battery
+        s.smc.batteryCurrent = -2.5           // contradicts the balance
+        #expect(s.currentA == 2.5)
+        s.smc.batteryCurrent = 2.4            // agrees
+        #expect(s.currentA == 2.4)
+    }
+
+    @Test func gaugeIsTheFallback() {
+        var s = BatterySnapshot()
+        s.voltage = 12000
+        s.amperage = 2500
+        #expect(s.currentA == 2.5)
+        #expect(s.batteryPowerW == 30)
+    }
+}

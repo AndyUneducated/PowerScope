@@ -160,12 +160,27 @@ struct BatterySnapshot {
     // MARK: Derived values
 
     var voltageV: Double? { voltage.map { Double($0) / 1000 } }
-    var currentA: Double? { amperage.map { Double($0) / 1000 } }
+    /// The gauge's current. It only refreshes every few seconds to tens of seconds, so right
+    /// after plugging in or out it can still show the previous state.
+    var gaugeCurrentA: Double? { amperage.map { Double($0) / 1000 } }
+
+    /// Battery current in A, positive while charging. Prefers the SMC (`B0AC`, updated every
+    /// second) over the gauge. As a safety net, on external power the SMC value is only used
+    /// when its direction agrees with the energy balance (input minus system load).
+    var currentA: Double? {
+        guard let live = smc.batteryCurrent else { return gaugeCurrentA }
+        if externalConnected, let input = inputPowerW, let load = systemLoadW, abs(input - load) > 5,
+           abs(live) > 0.2, (input - load > 0) != (live > 0) {
+            return gaugeCurrentA
+        }
+        return live
+    }
 
     /// Battery power in W; positive while charging, negative while discharging.
+    /// Uses the SMC's live voltage and current when available.
     var batteryPowerW: Double? {
-        guard let voltage, let amperage else { return nil }
-        return Double(voltage) * Double(amperage) / 1_000_000
+        guard let v = smc.batteryVoltage ?? voltageV, let i = currentA else { return nil }
+        return v * i
     }
 
     var inputPowerW: Double? { telemetry.systemPowerIn.map { Double($0) / 1000 } }

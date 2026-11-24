@@ -71,58 +71,82 @@ struct OverviewPage: View {
         .labelsHidden()
     }
 
+    private func headline(_ s: BatterySnapshot) -> String {
+        switch s.mode {
+        case .fastCharging, .charging, .slowCharging:
+            s.timeToFull.map { "\(Format.minutes($0)) until full" } ?? "Charging"
+        case .onBattery, .supplementing:
+            s.timeToEmpty.map { "\(Format.minutes($0)) remaining" } ?? "Estimating time remaining…"
+        // The badge already says the state; the headline says what powers the Mac.
+        case .full: "Running on adapter power"
+        case .pluggedNotCharging: "Charging paused"
+        case .noBattery: "No battery"
+        }
+    }
+
+    private func subline(_ s: BatterySnapshot) -> String {
+        let battery = "Battery " + Format.signed(s.batteryPowerW, digits: 1, unit: "W")
+        guard s.externalConnected else {
+            return "\(battery) · system \(Format.number(s.systemLoadW, digits: 1, unit: "W"))"
+        }
+        var parts = ["Charger " + Format.number(s.inputPowerW, digits: 1, unit: "W"), battery]
+        if let c = s.pd.contract {
+            parts.append("\(Format.number(Double(c.voltage) / 1000, digits: c.voltage % 1000 == 0 ? 0 : 2)) V contract")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func temperatureCaption(_ s: BatterySnapshot) -> String {
+        guard let life = s.lifetime, let lo = life.minTemperature, let hi = life.maxTemperature else { return "Battery" }
+        return "Lifetime \(lo)–\(hi) °C"
+    }
+
+    private func worst(_ a: ReadingLevel, _ b: ReadingLevel) -> ReadingLevel {
+        [a, b].contains(.critical) ? .critical : [a, b].contains(.attention) ? .attention : .normal
+    }
+
     var body: some View {
         let s = monitor.snapshot
         PageScroll {
             Card {
-                HStack(spacing: 24) {
-                    RingGauge(percent: s.percent, tint: s.tone.color)
-                        .frame(width: 120, height: 120)
-                    VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 28) {
+                    RingGauge(percent: s.percent, tint: s.tone.color, lineWidth: 14, fontSize: 40)
+                        .frame(width: 150, height: 150)
+                    VStack(alignment: .leading, spacing: 10) {
                         StatusBadge(snapshot: s)
-                        Text(s.remainingTimeText)
-                            .font(.title3.weight(.medium))
-                        if let adapter = s.adapterSummary {
-                            Label(adapter, systemImage: "powerplug")
-                                .foregroundStyle(.secondary)
-                        }
-                        Text("Fast charging = battery charge power ≥ \(Int(BatterySnapshot.fastChargeWatts)) W")
-                            .font(.caption).foregroundStyle(.tertiary)
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Text(Format.signed(s.batteryPowerW, digits: 1))
-                            .font(.system(size: 44, weight: .bold, design: .rounded))
+                        Text(headline(s))
+                            .font(.system(size: 28, weight: .semibold, design: .rounded))
                             .monospacedDigit()
-                            .foregroundStyle(s.tone.foreground)
-                            .contentTransition(.numericText())
-                        Text("Battery power, W (+ in / − out)")
-                            .font(.caption).foregroundStyle(.secondary)
+                        Text(subline(s))
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        if let budget = PowerBudget(s) {
+                            PowerBudgetBar(budget: budget, compact: true)
+                                .frame(maxWidth: 460)
+                        }
                     }
+                    Spacer(minLength: 0)
                 }
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
-                MetricTile(title: "Battery voltage", value: Format.number(s.voltageV, digits: 3), unit: "V",
-                           symbol: "bolt.horizontal")
-                MetricTile(title: "Battery current", value: Format.signed(s.currentA, digits: 3), unit: "A",
-                           symbol: "arrow.left.arrow.right")
-                MetricTile(title: "Input power", value: Format.number(s.inputPowerW, digits: 1), unit: "W",
-                           symbol: "powerplug",
-                           footnote: s.inputVoltageV.map { "\(Format.number($0, digits: 2)) V · \(Format.number(s.inputCurrentA, digits: 2)) A" })
-                MetricTile(title: "System load", value: Format.number(s.systemLoadW, digits: 1), unit: "W",
-                           symbol: "cpu")
-                MetricTile(title: "Battery temperature", value: Format.number(s.temperature, digits: 1), unit: "°C",
-                           symbol: "thermometer.medium", level: .temperature(s.temperature))
-                MetricTile(title: "Health", value: Format.number(s.healthPercent, digits: 1), unit: "%",
-                           symbol: "heart", level: .health(s.healthPercent),
-                           footnote: "Status: \(s.healthStatusText)")
-                MetricTile(title: "Cycle count", value: Format.int(s.cycleCount), unit: "cycles",
-                           symbol: "arrow.triangle.2.circlepath", level: .cycles(s.cycleCount, design: s.designCycleCount),
-                           footnote: s.designCycleCount.map { "Rated for \($0) cycles" })
-                MetricTile(title: "Remaining", value: Format.int(s.remainingCapacity), unit: "mAh",
-                           symbol: "battery.75percent",
-                           footnote: s.fullChargeCapacity.map { "Full charge \($0) mAh" })
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
+                SummaryCard(title: "Charge", symbol: "battery.75percent",
+                            value: Format.int(s.remainingCapacity), unit: "mAh",
+                            caption: s.fullChargeCapacity.map { "of \($0) mAh when full" } ?? "",
+                            progress: Double(s.percent) / 100, tone: .neutral,
+                            progressTint: s.tone.isNeutral ? Color.gray : s.tone.color)
+                SummaryCard(title: "Health", symbol: "heart",
+                            value: Format.number(s.healthPercent, digits: 1), unit: "%",
+                            caption: [s.cycleCount.map { c in "\(c)" + (s.designCycleCount.map { " of \($0)" } ?? "") + " cycles" },
+                                      "Status: \(s.healthStatusText)"].compactMap { $0 }.joined(separator: " · "),
+                            progress: (s.healthPercent ?? 0) / 100,
+                            tone: worst(ReadingLevel.health(s.healthPercent), .cycles(s.cycleCount, design: s.designCycleCount)).tone)
+                SummaryCard(title: "Temperature", symbol: "thermometer.medium",
+                            value: Format.number(s.temperature, digits: 1), unit: "°C",
+                            caption: temperatureCaption(s),
+                            // 0–50 °C scale; amber from 40 °C, red from 45 °C.
+                            progress: (s.temperature ?? 0) / 50,
+                            tone: ReadingLevel.temperature(s.temperature).tone)
             }
 
             Card(title: "Last Hour", symbol: "chart.xyaxis.line") {
@@ -144,17 +168,22 @@ struct HistoryPage: View {
     @Environment(BatteryMonitor.self) private var monitor
     @State private var range: HistoryRange = .hour
 
+    private var rangePicker: some View {
+        Picker("Time range", selection: $range) {
+            ForEach(HistoryRange.allCases) { Text($0.title).tag($0) }
+        }
+        .labelsHidden()
+    }
+
     var body: some View {
         PageScroll {
-            HStack {
-                Picker("Time range", selection: $range) {
-                    ForEach(HistoryRange.allCases) { Text($0.title).tag($0) }
+            HStack(spacing: 12) {
+                // Segmented when there is room; a menu when the window is too narrow.
+                ViewThatFits(in: .horizontal) {
+                    rangePicker.pickerStyle(.segmented).fixedSize()
+                    rangePicker.pickerStyle(.menu).fixedSize()
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
-                Spacer()
-                Text("Read every 1 s · stored per 5 s (avg, min, max) · kept 7 days · \(monitor.history.count) windows")
-                    .font(.caption).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Menu {
                     Button("History…") { monitor.exportHistory() }
                     Button("PD events…") { monitor.exportEvents() }
@@ -163,6 +192,9 @@ struct HistoryPage: View {
                 }
                 .fixedSize()
             }
+            Text("Read every 1 s · stored per 5 s (avg, min, max) · kept 7 days · \(monitor.history.count) windows")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             ForEach(HistoryMetric.allCases) { metric in
                 Card(title: metric.title + " (\(metric.unit))", symbol: symbol(metric)) {
                     HistoryChart(metric: metric, range: range)

@@ -37,6 +37,8 @@ final class BatteryMonitor {
     @ObservationIgnored private var lastPruneDate = Date.distantPast
     @ObservationIgnored private var lastReadDate = Date.distantPast
     @ObservationIgnored private var previousTracking = PDTrackingState()
+    @ObservationIgnored private var linkClassifier = PDLinkClassifier()
+    @ObservationIgnored private var previousExternal: Bool?
     @ObservationIgnored private var trackingStarted = false
     @ObservationIgnored private var notificationPort: IONotificationPortRef?
     @ObservationIgnored private var interestNotifier: io_object_t = 0
@@ -145,14 +147,17 @@ final class BatteryMonitor {
 
     private func trackPowerDelivery(_ s: BatterySnapshot) {
         let current = PDTrackingState(s.pd)
-        defer { previousTracking = current }
+        let justConnected = previousExternal == false && s.externalConnected
+        defer { previousTracking = current; previousExternal = s.externalConnected }
         guard trackingStarted else {
             trackingStarted = true
             record(PDEventDetector.started(s.pd), at: s.date)
             return
         }
-        for event in PDEventDetector.detect(previous: previousTracking, current: current,
-                                            activePort: s.pd.activePort?.index ?? -1) {
+        let detected = PDEventDetector.detect(previous: previousTracking, current: current,
+                                              activePort: s.pd.activePort?.index ?? -1)
+        for event in linkClassifier.classify(detected, at: s.date, externalConnected: s.externalConnected,
+                                             externalJustConnected: justConnected) {
             record(event, at: s.date)
         }
     }
