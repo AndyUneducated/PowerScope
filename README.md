@@ -12,7 +12,8 @@
 ![USB PD](https://img.shields.io/badge/USB%20PD-3.1%20%C2%B7%20EPR-34C759)
 ![macOS](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)
 ![Xcode](https://img.shields.io/badge/Xcode-27-1575F9?logo=xcode&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-32%20passing-34C759)
+![Version](https://img.shields.io/badge/version-1.0.0-0A84FF)
+[![Tests](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml/badge.svg)](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml)
 
 <img src="docs/screenshots/overview.png" width="760" alt="Overview">
 
@@ -36,6 +37,7 @@
 - 📡 **Voltage sources**: every voltage labeled as measured, setpoint or derived, with where it comes from
 - 🩺 **Consistency checks**: pack vs cells, gauge vs SMC, telemetry vs SMC, input stability, link stability, data freshness
 - 🔗 **PD link health**: reconnects, hard resets, renegotiations and rejected requests, logged even between samples
+- 🔌 **Ports**: every physical USB-C and MagSafe input with the charger it reports, and every port controller with what its source offers, EPR support, request and power budget; stale entries from a previous charger are marked
 - 🚀 **Fast charging**: judged by measured battery power (≥ 30 W), not by the `IsCharging` flag
 
 ### 📈 History
@@ -43,6 +45,7 @@
 - 🗓️ Kept for **7 days** in SwiftData, together with the PD event log
 - 📊 Charts for power, current, battery voltage, input voltage (with the negotiated contract), charge and temperature
 - 🕳️ Periods when the app was not running show as gaps, not as straight lines
+- 📤 **CSV export** of the full history and the PD event log (File ▸ Export, or the History page)
 
 ### 🧭 App
 - 🪟 Main window with Overview, Charging, History, Battery Health and Raw Data pages
@@ -53,9 +56,11 @@
 
 ## 📸 Screenshots
 
-| Charging | Charging details |
+| Charging | Ports |
 | :---: | :---: |
-| <img src="docs/screenshots/charging.png" width="420"> | <img src="docs/screenshots/charging-details.png" width="420"> |
+| <img src="docs/screenshots/charging.png" width="420"> | <img src="docs/screenshots/ports.png" width="420"> |
+| **Checks, link health and timeline** | **Raw data** |
+| <img src="docs/screenshots/charging-details.png" width="420"> | <img src="docs/screenshots/raw.png" width="420"> |
 | **Battery health** | **History** |
 | <img src="docs/screenshots/battery.png" width="420"> | <img src="docs/screenshots/history.png" width="420"> |
 | **Light mode** | **Menu bar** |
@@ -82,6 +87,7 @@ flowchart TB
         BR["BatteryReader"]
         PD["PDState + PDDecoder"]
         RES["PDContractResolver"]
+        DET["PDEventDetector"]
         SR["SMCReadings"]
     end
 
@@ -89,7 +95,7 @@ flowchart TB
         direction LR
         SNAP["BatterySnapshot<br/>+ cross-checks"]
         MON["BatteryMonitor<br/>@Observable · 1 Hz + IOKit notifications"]
-        EV["PD event tracker"]
+        EV["PD event log<br/>folded per 60 s"]
         WIN["5 s window<br/>avg · min · max"]
     end
 
@@ -104,6 +110,7 @@ flowchart TB
         MAIN["Main window<br/>5 pages"]
         MB["Menu bar<br/>label + panel"]
         TH["Theme<br/>color rules"]
+        CSV["CSVExport"]
     end
 
     B --> BR
@@ -117,7 +124,7 @@ flowchart TB
     RES --> SNAP
     SR --> SNAP
     SNAP --> MON
-    MON --> EV --> PDE
+    MON --> DET --> EV --> PDE
     MON --> WIN --> PSM
     PSM --> MON
     PDE --> MON
@@ -125,13 +132,16 @@ flowchart TB
     MON --> MB
     TH -.-> MAIN
     TH -.-> MB
+    MON --> CSV
 ```
 
 ### 🧩 Modules
 - 📥 **`BatteryReader`**: copies each IOKit registry entry in one call, so all values come from the same instant
 - 🔬 **`PDDecoder`**: pure USB PD 3.1 decoding of PDOs and RDOs (Fixed, Battery, Variable, PPS, EPR AVS, SPR AVS)
 - 🧭 **`PDContractResolver`**: decides which contract is in use (see below)
-- 🗂️ **`PDState`**: port controllers, the source macOS elected, and the cross-checks
+- 🗂️ **`PDState`**: port controllers, physical ports and their sources, the source macOS elected, and the cross-checks
+- 🚨 **`PDEventDetector`**: pure detection of PD link events from counter deltas and contract changes, plus the 60 s folding rule
+- 📤 **`CSVExport`**: RFC 4180 CSV of history windows and PD events
 - 🎛️ **`SMC`**: minimal read-only AppleSMC client (no root needed on Apple Silicon)
 - 🫀 **`BatteryMonitor`**: 1 Hz polling plus battery notifications, live 3-minute buffer, 5 s windows, PD event log, retention
 - 🎨 **`Theme`**: the single source of every color in the app
@@ -205,11 +215,14 @@ One rule, defined in `Theme.swift`: **a color says where energy flows and whethe
 ---
 
 ## 🧪 Tests
-Swift Testing suites in `PowerScopeTests/`, replaying PD data captured from a real Mac with Apple's 140 W adapter over three cables:
-- 🔬 PDO / RDO decoding: 60 W, 94 W and 140 W objects, EPR AVS, PPS, source flags, EPR positions
-- 🧭 Contract resolution: stale RDO, RDO catching up, 5 V fallback, stale power budget, PMU vs selection, AVS, PPS, RDO-only
-- ✅ Cross-checks for the EPR case
-- 🎨 Color rules: charging speed, battery thresholds, battery assisting, reading levels
+44 Swift Testing tests in `PowerScopeTests/`, run on every push by [GitHub Actions](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml). They replay PD data captured from a real Mac with Apple's 140 W adapter over three cables:
+- 🔬 **Decoding**: 60 W, 94 W and 140 W PDOs, EPR AVS, PPS, source flags, EPR positions, RDOs
+- 🧭 **Contract resolution**: stale RDO, RDO catching up, 5 V fallback, stale power budget, PMU vs selection, AVS, PPS, RDO-only
+- 🚨 **Event detection**: counter deltas, counter resets, new ports, contract transitions, current appearing, the 60 s fold window
+- ✅ **Cross-checks** for the EPR case
+- 💾 **Storage**: a first-release store opening with the current models (migration), and sample round trips
+- 📤 **CSV**: escaping, column values, empty unknowns, event ordering and quoting
+- 🎨 **Color rules**: charging speed, battery thresholds, battery assisting, reading levels
 - 📊 History downsampling, formatting and registry parsing
 
 ```bash
@@ -218,16 +231,30 @@ xcodebuild test -project PowerScope.xcodeproj -scheme PowerScope -destination 'p
 
 ---
 
-## 🛠️ Build and run
+## 📦 Install
+- ⬇️ Download the latest `PowerScope-vX.Y.Z.zip` from [Releases](https://github.com/AndyUneducated/PowerScope/releases) and unzip it
+- 📂 Move `PowerScope.app` to `/Applications`
+- 🔓 The app is signed ad hoc, so clear the download quarantine once:
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/PowerScope.app
+  ```
+- 🍏 Requires macOS 15 or later on Apple Silicon
+
+## 🛠️ Build from source
 
 ```bash
 xcodebuild -project PowerScope.xcodeproj -scheme PowerScope -configuration Release -derivedDataPath build/DerivedData build
-open build/DerivedData/Build/Products/Release/PowerScope.app
+ditto build/DerivedData/Build/Products/Release/PowerScope.app /Applications/PowerScope.app
+open /Applications/PowerScope.app
 ```
 
 - 🔏 Signed ad hoc ("Sign to Run Locally"); App Sandbox is off because the app reads the IOKit registry and the SMC directly
-- 🍏 Requires macOS 15 or later on Apple Silicon
 - 🧭 `open PowerScope.app --args -page charging` opens a given page (`overview`, `charging`, `history`, `battery`, `raw`)
+
+## 🚀 Releasing
+- 🏷️ Versions follow [Semantic Versioning](https://semver.org); the current version is **1.0.0**
+- 📝 Bump `MARKETING_VERSION` in the project and add notes in `docs/releases/vX.Y.Z.md`
+- 🔖 Push a tag `vX.Y.Z`: the [Release workflow](.github/workflows/release.yml) checks the tag matches the app version, runs the tests, builds the app and publishes `PowerScope-vX.Y.Z.zip` with its SHA-256
 
 ---
 
@@ -242,14 +269,18 @@ PowerScope/
 ├── PowerSample.swift            SwiftData models (PowerSample, PDEvent)
 ├── Theme.swift                  Color rules
 ├── Format.swift                 Number and time formatting
+├── Export/CSVExport.swift       CSV export
 ├── PowerDelivery/
 │   ├── PDDecoder.swift          USB PD 3.1 PDO / RDO decoding
 │   ├── PDContractResolver.swift Which contract is in use
+│   ├── PDEventDetector.swift    PD link events from counter deltas
 │   ├── PDState.swift            Port controllers, elected source, cross-checks
 │   └── SMC.swift                Read-only AppleSMC client
 └── Views/                       Pages, charts, menu bar panel, components
 PowerScopeTests/                 Swift Testing suites
+docs/releases/                   Release notes, one file per version
 docs/screenshots/                Screenshots used in this README
+.github/workflows/               Tests on every push, releases on tags
 ```
 
 ---
