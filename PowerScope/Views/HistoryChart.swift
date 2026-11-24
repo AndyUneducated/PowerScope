@@ -70,22 +70,22 @@ enum HistoryMetric: String, CaseIterable, Identifiable {
     var series: [MetricSeries] {
         switch self {
         case .power:
-            [MetricSeries(name: "Battery power", color: .green, value: { $0.batteryPower }),
-             MetricSeries(name: "Input power", color: .blue, value: { $0.inputPower }),
-             MetricSeries(name: "System load", color: .orange, value: { $0.systemLoad })]
+            [MetricSeries(name: "Battery power", color: Palette.battery, value: { $0.batteryPower }),
+             MetricSeries(name: "Input power", color: Palette.input, value: { $0.inputPower }),
+             MetricSeries(name: "System load", color: Palette.system, value: { $0.systemLoad })]
         case .current:
-            [MetricSeries(name: "Battery current", color: .purple, value: { $0.current })]
+            [MetricSeries(name: "Battery current", color: Palette.battery, value: { $0.current })]
         case .voltage:
-            [MetricSeries(name: "Battery voltage", color: .indigo, value: { $0.voltage },
+            [MetricSeries(name: "Battery voltage", color: Palette.battery, value: { $0.voltage },
                           range: { p in p.voltageMin.flatMap { lo in p.voltageMax.map { (lo, $0) } } })]
         case .inputVoltage:
-            [MetricSeries(name: "Negotiated", color: .green, value: { $0.contractVoltage }),
-             MetricSeries(name: "System input", color: .blue, value: { $0.inputVoltage },
+            [MetricSeries(name: "Negotiated", color: Palette.input, value: { $0.contractVoltage }),
+             MetricSeries(name: "System input", color: Palette.inputSecondary, value: { $0.inputVoltage },
                           range: { p in p.inputVoltageMin.flatMap { lo in p.inputVoltageMax.map { (lo, $0) } } })]
         case .percent:
-            [MetricSeries(name: "Charge", color: .green, value: { $0.percent })]
+            [MetricSeries(name: "Charge", color: Palette.battery, value: { $0.percent })]
         case .temperature:
-            [MetricSeries(name: "Battery temperature", color: .red, value: { $0.temperature })]
+            [MetricSeries(name: "Battery temperature", color: Palette.other, value: { $0.temperature })]
         }
     }
 }

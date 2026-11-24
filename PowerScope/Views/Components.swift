@@ -33,21 +33,22 @@ struct MetricTile: View {
     let value: String
     var unit: String = ""
     var symbol: String
-    var tint: Color = .accentColor
+    /// Tiles stay neutral; only a reading that is off gets the attention or critical color.
+    var level: ReadingLevel = .normal
     var footnote: String?
 
     var body: some View {
+        let tone = level.tone
         VStack(alignment: .leading, spacing: 6) {
             Label(title, systemImage: symbol)
                 .font(.callout)
-                .foregroundStyle(.secondary)
-                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tone.isNeutral ? Color.secondary : tone.color)
                 .imageScale(.medium)
-                .tint(tint)
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(value)
                     .font(.system(.title2, design: .rounded, weight: .semibold))
                     .monospacedDigit()
+                    .foregroundStyle(tone.foreground)
                     .contentTransition(.numericText())
                 if !unit.isEmpty {
                     Text(unit).font(.callout).foregroundStyle(.secondary)
@@ -133,15 +134,19 @@ struct RingGauge: View {
 }
 
 struct StatusBadge: View {
-    let mode: ChargeMode
+    let snapshot: BatterySnapshot
 
     var body: some View {
-        Label(mode.title, systemImage: mode.symbol)
-            .font(.callout.weight(.semibold))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .foregroundStyle(mode.color)
-            .background(Capsule().fill(mode.color.opacity(0.14)))
+        let tone = snapshot.tone
+        Label {
+            Text(snapshot.mode.title).foregroundStyle(tone.foreground)
+        } icon: {
+            Image(systemName: snapshot.statusSymbol).foregroundStyle(snapshot.statusSymbolColor)
+        }
+        .font(.callout.weight(.semibold))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(tone.isNeutral ? Color.primary.opacity(0.08) : tone.color.opacity(0.16)))
     }
 }
 

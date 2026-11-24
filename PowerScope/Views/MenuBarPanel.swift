@@ -16,10 +16,10 @@ struct MenuBarPanel: View {
         let problems = isVisible ? monitor.problemCount(within: 600) : frozenProblems
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 14) {
-                RingGauge(percent: s.percent, tint: s.mode.color, lineWidth: 7, fontSize: 20)
+                RingGauge(percent: s.percent, tint: s.tone.color, lineWidth: 7, fontSize: 20)
                     .frame(width: 64, height: 64)
                 VStack(alignment: .leading, spacing: 4) {
-                    StatusBadge(mode: s.mode)
+                    StatusBadge(snapshot: s)
                     Text(s.remainingTimeText).font(.callout)
                     if let adapter = s.adapterSummary {
                         Text(adapter).font(.caption).foregroundStyle(.secondary)

@@ -14,8 +14,8 @@ private func amps(_ mA: Int?, digits: Int = 2) -> String {
 extension CheckStatus {
     var color: Color {
         switch self {
-        case .match: .green
-        case .mismatch: .orange
+        case .match: Tone.neutral.color
+        case .mismatch: Tone.attention.color
         case .unavailable: .secondary
         }
     }
@@ -53,7 +53,7 @@ struct PDContractCard: View {
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 if contract.rdo?.capabilityMismatch == true {
                     Label("Capability mismatch: the Mac wants more power than this source offers.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(.orange)
+                        .font(.callout).foregroundStyle(Tone.attention.color)
                 }
             } else {
                 Text(s.externalConnected ? "No PD profile in use right now (non-PD source, or the link is re-attaching at 5 V)." : "Not connected to power.")
@@ -107,10 +107,10 @@ struct LiveVoltageChart: View {
     }
 
     private static let series: [(String, Color, KeyPath<LiveReading, Double?>)] = [
-        ("Negotiated", .green, \.contract),
-        ("System input (telemetry)", .blue, \.systemInput),
-        ("System input (SMC)", .cyan, \.smcInput),
-        ("Battery pack (SMC)", .indigo, \.smcPack),
+        ("Negotiated", Palette.input, \.contract),
+        ("System input (telemetry)", Palette.inputSecondary, \.systemInput),
+        ("System input (SMC)", Palette.inputSecondary.opacity(0.55), \.smcInput),
+        ("Battery pack (SMC)", Palette.battery, \.smcPack),
     ]
 
     var body: some View {
@@ -145,12 +145,9 @@ struct VoltageSourcesCard: View {
 
     enum Kind: String {
         case measured = "Measured", setpoint = "Setpoint", derived = "Derived"
+        /// Type badges are metadata, so they stay neutral; measured values read strongest.
         var color: Color {
-            switch self {
-            case .measured: .blue
-            case .setpoint: .purple
-            case .derived: .gray
-            }
+            self == .measured ? .primary : .secondary
         }
     }
 
@@ -321,8 +318,11 @@ struct PDLinkCard: View {
         let s = monitor.snapshot
         Card(title: "PD Link Health", symbol: "cable.connector") {
             HStack(spacing: 12) {
-                MetricTile(title: "Issues, 10 min", value: "\(monitor.problemCount(within: 600))", symbol: "exclamationmark.triangle", tint: .orange)
-                MetricTile(title: "Issues, 1 h", value: "\(monitor.problemCount(within: 3600))", symbol: "clock", tint: .orange)
+                let recent = monitor.problemCount(within: 600), hour = monitor.problemCount(within: 3600)
+                MetricTile(title: "Issues, 10 min", value: "\(recent)", symbol: "exclamationmark.triangle",
+                           level: recent > 0 ? .attention : .normal)
+                MetricTile(title: "Issues, 1 h", value: "\(hour)", symbol: "clock",
+                           level: hour > 0 ? .attention : .normal)
             }
             if s.pd.ports.isEmpty {
                 Text("No USB-C port controller data.").foregroundStyle(.secondary)
@@ -359,7 +359,7 @@ struct PDLinkCard: View {
                     ForEach(monitor.events.prefix(40)) { event in
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: event.eventKind.symbol)
-                                .foregroundStyle(event.eventKind.isProblem ? .orange : .green)
+                                .foregroundStyle(event.eventKind.isProblem ? Tone.attention.color : Color.secondary)
                                 .frame(width: 18)
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(event.count > 1 ? "\(event.eventKind.title) ×\(event.count)" : event.eventKind.title)
@@ -411,12 +411,12 @@ struct PDProfilesCard: View {
                             Text(Format.hex(Int(pdo.raw))).font(.caption.monospaced()).foregroundStyle(.tertiary)
                             Spacer()
                             if active {
-                                Label("Negotiated", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                                Label("Negotiated", systemImage: "checkmark.circle.fill").foregroundStyle(Palette.input)
                             }
                         }
                         .font(.callout.monospacedDigit())
                         .padding(.vertical, 6).padding(.horizontal, 8)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(active ? Color.green.opacity(0.1) : .clear))
+                        .background(RoundedRectangle(cornerRadius: 6).fill(active ? Palette.input.opacity(0.12) : .clear))
                     }
                 }
                 if let flags = port.pdos.first?.flags, !flags.isEmpty {

@@ -81,32 +81,6 @@ enum ChargeMode {
         case .full: "Fully charged"
         }
     }
-
-    var color: Color {
-        switch self {
-        case .noBattery: .gray
-        case .onBattery: .orange
-        case .supplementing: .yellow
-        case .fastCharging: .pink
-        case .charging: .green
-        case .slowCharging: .teal
-        case .pluggedNotCharging: .blue
-        case .full: .green
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .noBattery: "powerplug"
-        case .onBattery: "battery.75percent"
-        case .supplementing: "exclamationmark.triangle"
-        case .fastCharging: "bolt.fill"
-        case .charging: "bolt"
-        case .slowCharging: "tortoise"
-        case .pluggedNotCharging: "powerplug.fill"
-        case .full: "checkmark.circle.fill"
-        }
-    }
 }
 
 struct BatterySnapshot {

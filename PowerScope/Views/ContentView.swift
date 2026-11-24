@@ -76,10 +76,10 @@ struct OverviewPage: View {
         PageScroll {
             Card {
                 HStack(spacing: 24) {
-                    RingGauge(percent: s.percent, tint: s.mode.color)
+                    RingGauge(percent: s.percent, tint: s.tone.color)
                         .frame(width: 120, height: 120)
                     VStack(alignment: .leading, spacing: 8) {
-                        StatusBadge(mode: s.mode)
+                        StatusBadge(snapshot: s)
                         Text(s.remainingTimeText)
                             .font(.title3.weight(.medium))
                         if let adapter = s.adapterSummary {
@@ -94,7 +94,7 @@ struct OverviewPage: View {
                         Text(Format.signed(s.batteryPowerW, digits: 1))
                             .font(.system(size: 44, weight: .bold, design: .rounded))
                             .monospacedDigit()
-                            .foregroundStyle(s.mode.color)
+                            .foregroundStyle(s.tone.foreground)
                             .contentTransition(.numericText())
                         Text("Battery power, W (+ in / − out)")
                             .font(.caption).foregroundStyle(.secondary)
@@ -104,24 +104,24 @@ struct OverviewPage: View {
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
                 MetricTile(title: "Battery voltage", value: Format.number(s.voltageV, digits: 3), unit: "V",
-                           symbol: "bolt.horizontal", tint: .indigo)
+                           symbol: "bolt.horizontal")
                 MetricTile(title: "Battery current", value: Format.signed(s.currentA, digits: 3), unit: "A",
-                           symbol: "arrow.left.arrow.right", tint: .purple)
+                           symbol: "arrow.left.arrow.right")
                 MetricTile(title: "Input power", value: Format.number(s.inputPowerW, digits: 1), unit: "W",
-                           symbol: "powerplug", tint: .blue,
+                           symbol: "powerplug",
                            footnote: s.inputVoltageV.map { "\(Format.number($0, digits: 2)) V · \(Format.number(s.inputCurrentA, digits: 2)) A" })
                 MetricTile(title: "System load", value: Format.number(s.systemLoadW, digits: 1), unit: "W",
-                           symbol: "cpu", tint: .orange)
+                           symbol: "cpu")
                 MetricTile(title: "Battery temperature", value: Format.number(s.temperature, digits: 1), unit: "°C",
-                           symbol: "thermometer.medium", tint: .red)
+                           symbol: "thermometer.medium", level: .temperature(s.temperature))
                 MetricTile(title: "Health", value: Format.number(s.healthPercent, digits: 1), unit: "%",
-                           symbol: "heart", tint: .pink,
+                           symbol: "heart", level: .health(s.healthPercent),
                            footnote: "Status: \(s.healthStatusText)")
                 MetricTile(title: "Cycle count", value: Format.int(s.cycleCount), unit: "cycles",
-                           symbol: "arrow.triangle.2.circlepath", tint: .teal,
+                           symbol: "arrow.triangle.2.circlepath", level: .cycles(s.cycleCount, design: s.designCycleCount),
                            footnote: s.designCycleCount.map { "Rated for \($0) cycles" })
                 MetricTile(title: "Remaining", value: Format.int(s.remainingCapacity), unit: "mAh",
-                           symbol: "battery.75percent", tint: .green,
+                           symbol: "battery.75percent",
                            footnote: s.fullChargeCapacity.map { "Full charge \($0) mAh" })
             }
 
@@ -289,7 +289,7 @@ struct BatteryPage: View {
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         ProgressView(value: min((s.healthPercent ?? 0) / 100, 1))
-                            .tint(healthColor(s.healthPercent))
+                            .tint(ReadingLevel.health(s.healthPercent).tone.color)
                         HStack {
                             Text("Status: \(s.healthStatusText)")
                             if let c = s.healthCondition { Text("· \(c)") }
@@ -332,7 +332,7 @@ struct BatteryPage: View {
                         let volts = s.cells.compactMap(\.voltage)
                         if let lo = volts.min(), let hi = volts.max() {
                             InfoRow(label: "Voltage spread", value: "\(hi - lo) mV",
-                                    valueColor: hi - lo > 50 ? .orange : .primary)
+                                    valueColor: hi - lo > 50 ? Tone.attention.color : .primary)
                         }
                         if s.cells.isEmpty {
                             Text("No cell data available").foregroundStyle(.secondary)
@@ -357,14 +357,6 @@ struct BatteryPage: View {
                     ("Lifetime min pack voltage", Format.number(s.lifetime?.minPackVoltage.map { Double($0) / 1000 }, digits: 3, unit: "V")),
                 ])
             }
-        }
-    }
-
-    private func healthColor(_ value: Double?) -> Color {
-        switch value ?? 0 {
-        case 90...: .green
-        case 80..<90: .yellow
-        default: .orange
         }
     }
 }

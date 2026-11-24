@@ -23,6 +23,15 @@ A native macOS battery and charging monitor (Swift 6, SwiftUI, Swift Charts, Swi
 - Battery voltage prefers SMC `B0AV` (updates every second) over the gauge `Voltage` (updates every few seconds). The gauge's age is shown.
 - Consistency checks: gauge pack vs sum of cells (30 mV + 35 mΩ × |I|), gauge vs SMC pack (only when the gauge value is fresh), telemetry vs SMC input (only while input is steady), negotiated vs elected source, input stability, PD link stability, gauge freshness.
 
+## Colors
+One rule, defined in `Theme.swift`: color says where energy flows and whether anything needs attention.
+- Green: energy flowing into the battery; brighter when charging faster (fast ≥ 30 W, normal, trickle < 10 W).
+- Neutral: normal and calm — plugged in and paused, fully charged (with a green check), or on battery above 20 %.
+- Amber: attention — battery assisting a too-weak adapter, battery ≤ 20 %, PD link problems, a reading out of range.
+- Red: act now — battery ≤ 10 % or critical.
+
+Data series use the same colors everywhere: blue for the supply side (negotiated, input), green for the battery, purple for system load, gray for temperature. Metric tiles stay neutral and only take amber or red when their value is off (temperature ≥ 40 / 45 °C, health < 80 %, cycles past design). The app follows the system accent color.
+
 ## Rules
 - Fast charging: battery charging power ≥ 30 W (`BatterySnapshot.fastChargeWatts`); below 10 W counts as slow/trickle charging.
 - Charge state is judged by measured battery power, not the `IsCharging` flag, which lags.
