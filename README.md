@@ -12,7 +12,7 @@
 ![USB PD](https://img.shields.io/badge/USB%20PD-3.1%20%C2%B7%20EPR-34C759)
 ![macOS](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)
 ![Xcode](https://img.shields.io/badge/Xcode-27-1575F9?logo=xcode&logoColor=white)
-![Version](https://img.shields.io/badge/version-1.1.0-0A84FF)
+![Version](https://img.shields.io/badge/version-1.2.0-0A84FF)
 [![Tests](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml/badge.svg)](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml)
 
 <img src="docs/screenshots/overview.png" width="760" alt="Overview">
@@ -23,6 +23,10 @@
 
 ## ✨ Features
 
+### 🧭 Overview
+- 🔋 **At a glance**: a large charge ring, the state, time to full or time remaining, and a compact power budget bar
+- 🗂️ **Three grouped cards** instead of eight tiles: charge (mAh), health (with cycles) and temperature (with its lifetime range); electrical details live on the Charging page
+
 ### 🔋 Battery
 - 💚 **Health**: full charge ÷ design capacity, plus nominal health and Apple's 80 % service threshold
 - 🔁 **Cycles**: cycle count against the rated cycle life
@@ -31,13 +35,14 @@
 - 🏷️ **Identity**: serial, gauge chip, cell vendor, manufacture code, chemistry ID, gauge firmware
 
 ### 🔌 Charging and USB-C PD
+- ⚡ **Now card**: three large readings (what the charger delivers, the negotiated contract, battery power) and a **power budget bar** showing how much of the charger's contract the system and the battery use, and the headroom left; it turns amber when the battery has to help a charger that is not enough
 - 🧭 **Ordered by what you check most**: Now, live voltages and PD link come first; charger, cross-check, consistency checks, ports, voltage sources and raw codes are collapsible, show a one-line status when collapsed, and remember whether they are open
 - 🤝 **Negotiated contract**: the PDO actually in use (Fixed, PPS, AVS, including EPR 28 V), with voltage, current and power
 - 🧮 **Source capabilities**: every PDO the charger offers, decoded per USB PD 3.1, with source flags
 - ✅ **Cross-check**: the contract is compared with four other places macOS reports it
 - 📡 **Voltage sources**: every voltage labeled as measured, setpoint or derived, with where it comes from
 - 🩺 **Consistency checks**: pack vs cells, gauge vs SMC, telemetry vs SMC, input stability, link stability, data freshness
-- 🔗 **PD link health**: reconnects, hard resets, renegotiations and rejected requests, logged even between samples; **Clear** resets the issue counts and timeline (the chip's own totals become a baseline, since they cannot be reset)
+- 🔗 **PD link health**: reconnects, hard resets, renegotiations and rejected requests, logged even between samples. Plugging a charger in or out is not an issue: an isolated re-attach and its handshake fold into one "Charger attached" event, and only repeated re-attaches within 2 minutes count; **Clear** resets the issue counts and timeline (the chip's own totals become a baseline, since they cannot be reset)
 - 🔌 **Ports**: every physical USB-C and MagSafe input with the charger actually connected, and every port controller with what its source offers, EPR support, request and power budget; cached entries from a disconnected charger are shown as not connected
 - 🚀 **Fast charging**: judged by measured battery power (≥ 30 W), not by the `IsCharging` flag
 
@@ -64,8 +69,8 @@
 | <img src="docs/screenshots/ports.png" width="420"> | <img src="docs/screenshots/raw.png" width="420"> |
 | **Battery health** | **History** |
 | <img src="docs/screenshots/battery.png" width="420"> | <img src="docs/screenshots/history.png" width="420"> |
-| **Light mode** | **Menu bar** |
-| <img src="docs/screenshots/overview-light.png" width="420"> | <img src="docs/screenshots/menubar.png" width="260"> |
+| **Menu bar** | **Menu bar, light** |
+| <img src="docs/screenshots/menubar.png" width="260"> | <img src="docs/screenshots/menubar-light.png" width="260"> |
 
 ---
 
@@ -177,6 +182,7 @@ Then:
 ### 📡 Which voltage is real
 - 🔵 **Setpoints**: negotiated VBUS, elected VBUS, PMU input setpoint, charge target per cell
 - 🟢 **Measured**: system input (telemetry and SMC `VD0R`), battery pack (gauge and SMC `B0AV`)
+- 🔋 Battery current and power come from the SMC (`B0AC`, every second); the gauge's `Amperage` can lag by tens of seconds after a plug or unplug, so it is only a fallback, also used when the SMC's direction disagrees with input minus system load
 - ⚪ **Derived**: sum of cell groups
 - ℹ️ The system input is an internal rail behind the input switches, not VBUS; it reads slightly below the negotiated voltage under load
 - ℹ️ This Mac does not report a measured VBUS (`ChargerVBUS` is 0), and the app says so instead of guessing
@@ -218,7 +224,7 @@ One rule, defined in `Theme.swift`: **a color says where energy flows and whethe
 ---
 
 ## 🧪 Tests
-58 Swift Testing tests in `PowerScopeTests/`, run on every push by [GitHub Actions](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml). They replay PD data captured from a real Mac with Apple's 140 W adapter over three cables:
+68 Swift Testing tests in `PowerScopeTests/`, run on every push by [GitHub Actions](https://github.com/AndyUneducated/PowerScope/actions/workflows/ci.yml). They replay PD data captured from a real Mac with Apple's 140 W adapter over three cables:
 - 🔬 **Decoding**: 60 W, 94 W and 140 W PDOs, EPR AVS, PPS, source flags, EPR positions, RDOs
 - 🧭 **Contract resolution**: stale RDO, RDO catching up, 5 V fallback, stale power budget, PMU vs selection, AVS, PPS, RDO-only
 - 🚨 **Event detection**: counter deltas, counter resets, new ports, contract transitions, current appearing, the 60 s fold window
@@ -226,6 +232,8 @@ One rule, defined in `Theme.swift`: **a color says where energy flows and whethe
 - 💾 **Storage**: a first-release store opening with the current models (migration), and sample round trips
 - 📤 **CSV**: escaping, column values, empty unknowns, event ordering and quoting
 - 🧹 **Clearing issues**: counts since the clear, no baseline, controller resets after a clear
+- 🔋 **Battery current source**: SMC over a stale gauge, gauge fallback, energy-balance guard
+- 🔌 **Plug-in vs flaky link**: the real 100 W plug-in folds into one non-issue event, the failing cable's repeated re-attaches all count, unplugging is not an issue
 - 🎨 **Color rules**: charging speed, battery thresholds, battery assisting, reading levels
 - 🔌 **Ports and stale data**: only live (registered) sources count as in use; controllers without an attached charger are never used for the contract, and there is no contract on battery
 - 📊 History downsampling, formatting and registry parsing
@@ -257,7 +265,7 @@ open /Applications/PowerScope.app
 - 🧭 `open PowerScope.app --args -page charging` opens a given page (`overview`, `charging`, `history`, `battery`, `raw`)
 
 ## 🚀 Releasing
-- 🏷️ Versions follow [Semantic Versioning](https://semver.org); the current version is **1.1.0**
+- 🏷️ Versions follow [Semantic Versioning](https://semver.org); the current version is **1.2.0**
 - 📝 Bump `MARKETING_VERSION` in the project and add notes in `docs/releases/vX.Y.Z.md`
 - 🔖 Push a tag `vX.Y.Z`: the [Release workflow](.github/workflows/release.yml) checks the tag matches the app version, runs the tests, builds the app and publishes `PowerScope-vX.Y.Z.zip` with its SHA-256
 
