@@ -33,9 +33,7 @@ final class BatteryMonitor {
     @ObservationIgnored private var windowStart = Date.now
     @ObservationIgnored private var lastPruneDate = Date.distantPast
     @ObservationIgnored private var lastReadDate = Date.distantPast
-    @ObservationIgnored private var previousPorts: [Int: PDPortState] = [:]
-    @ObservationIgnored private var previousElected: ElectedSource?
-    @ObservationIgnored private var previousContract: PDContract?
+    @ObservationIgnored private var previousTracking = PDTrackingState()
     @ObservationIgnored private var trackingStarted = false
     @ObservationIgnored private var notificationPort: IONotificationPortRef?
     @ObservationIgnored private var interestNotifier: io_object_t = 0
@@ -142,92 +140,34 @@ final class BatteryMonitor {
     // MARK: Power Delivery tracking
 
     private func trackPowerDelivery(_ s: BatterySnapshot) {
-        defer {
-            previousPorts = Dictionary(uniqueKeysWithValues: s.pd.ports.map { ($0.index, $0) })
-            previousElected = s.pd.electedPD
-            previousContract = s.pd.contract
-        }
+        let current = PDTrackingState(s.pd)
+        defer { previousTracking = current }
         guard trackingStarted else {
             trackingStarted = true
-            let contract = s.pd.contract
-            log(.started, port: s.pd.activePort?.index ?? -1, count: 1,
-                detail: contract.map { "Current contract \(describe($0))" } ?? "No PD contract",
-                contract: contract, at: s.date)
+            record(PDEventDetector.started(s.pd), at: s.date)
             return
         }
-
-        // The contract in use (power manager selection + RDO), compared as a whole.
-        let activeIndex = s.pd.activePort?.index ?? -1
-        switch (previousContract, s.pd.contract) {
-        case (nil, let new?):
-            log(.established, port: activeIndex, count: 1, detail: describe(new), contract: new, at: s.date)
-        case (_?, nil):
-            log(.lost, port: activeIndex, count: 1, detail: "No PD profile in use", contract: nil, at: s.date)
-        case (let old?, let new?) where old.voltage != new.voltage || old.pdo != new.pdo:
-            log(.changed, port: activeIndex, count: 1, detail: "\(describe(old)) → \(describe(new))", contract: new, at: s.date)
-        default:
-            break
-        }
-
-        let contract = s.pd.contract
-        for port in s.pd.ports {
-            guard let previous = previousPorts[port.index] else { continue }
-            let now = port.counters, before = previous.counters
-            func delta(_ key: KeyPath<PDCounters, Int>) -> Int { max(0, now[keyPath: key] - before[keyPath: key]) }
-
-            let attaches = delta(\.attach)
-            if attaches > 0 {
-                log(.reconnected, port: port.index, count: attaches,
-                    detail: "Source detached and re-attached", contract: contract, at: s.date)
-            }
-            let renegotiations = delta(\.sourceCapabilities) - attaches
-            if renegotiations > 0 {
-                log(.renegotiated, port: port.index, count: renegotiations,
-                    detail: "New Source_Capabilities without a reconnect", contract: contract, at: s.date)
-            }
-            let resets = delta(\.hardResets)
-            if resets > 0 {
-                log(.hardReset, port: port.index, count: resets, detail: "PD hard reset", contract: contract, at: s.date)
-            }
-            let rejects = delta(\.requestRejects) + delta(\.psReadyRejects)
-            if rejects > 0 {
-                log(.rejected, port: port.index, count: rejects, detail: "Source rejected a request", contract: contract, at: s.date)
-            }
-        }
-
-        if let old = previousElected, let new = s.pd.electedPD,
-           old.path != new.path || old.voltage != new.voltage || old.power != new.power {
-            log(.sourceSwitched, port: new.portNumber ?? -1, count: 1,
-                detail: "\(old.path) \(old.power / 1000) W → \(new.path) \(new.power / 1000) W",
-                voltage: new.voltage, current: new.current, at: s.date)
+        for event in PDEventDetector.detect(previous: previousTracking, current: current,
+                                            activePort: s.pd.activePort?.index ?? -1) {
+            record(event, at: s.date)
         }
     }
 
-    private func describe(_ c: PDContract) -> String {
-        let v = Format.number(Double(c.voltage) / 1000, digits: 2, unit: "V")
-        let i = c.current.map { Format.number(Double($0) / 1000, digits: 2, unit: "A") }
-            ?? c.currentLimit.map { "≤ " + Format.number(Double($0) / 1000, digits: 2, unit: "A") } ?? "—"
-        return "\(v) \(i) (PDO \(c.pdo.position), \(c.pdo.kind.rawValue))"
-    }
-
-    private func log(_ kind: PDEventKind, port: Int, count: Int, detail: String, contract: PDContract?, at date: Date) {
-        log(kind, port: port, count: count, detail: detail, voltage: contract?.voltage, current: contract?.current, at: date)
-    }
-
-    /// Folds repeats of the same kind on the same port within 60 s into the latest event.
-    private func log(_ kind: PDEventKind, port: Int, count: Int, detail: String, voltage: Int?, current: Int?, at date: Date) {
-        if let latest = events.first(where: { $0.kind == kind.rawValue && $0.port == port }),
-           date.timeIntervalSince(latest.lastDate) < 60 {
-            latest.count += count
+    /// Folds repeats of the same kind on the same port within the fold window into the latest event.
+    private func record(_ event: DetectedPDEvent, at date: Date) {
+        if let latest = events.first(where: { $0.kind == event.kind.rawValue && $0.port == event.port }),
+           PDEventDetector.shouldFold(event, at: date, intoKind: latest.kind, port: latest.port, lastDate: latest.lastDate) {
+            latest.count += event.count
             latest.lastDate = date
-            latest.detail = detail
-            latest.voltage = voltage
-            latest.current = current
+            latest.detail = event.detail
+            latest.voltage = event.voltage
+            latest.current = event.current
             events.sort { $0.lastDate > $1.lastDate }
         } else {
-            let event = PDEvent(date: date, kind: kind, port: port, count: count, detail: detail, voltage: voltage, current: current)
-            events.insert(event, at: 0)
-            container?.mainContext.insert(event)
+            let model = PDEvent(date: date, kind: event.kind, port: event.port, count: event.count,
+                                detail: event.detail, voltage: event.voltage, current: event.current)
+            events.insert(model, at: 0)
+            container?.mainContext.insert(model)
             if events.count > 300 { events.removeLast(events.count - 300) }
         }
         try? container?.mainContext.save()
@@ -269,6 +209,12 @@ final class BatteryMonitor {
         )
         history = (try? context.fetch(descriptor))?.map(\.point) ?? []
         prune(now: .now)
+    }
+
+    /// Every stored PD event, for export (the in-memory list keeps only the latest 300).
+    func allEvents() -> [PDEvent] {
+        guard let context = container?.mainContext else { return events }
+        return (try? context.fetch(FetchDescriptor<PDEvent>(sortBy: [SortDescriptor(\.firstDate)]))) ?? events
     }
 
     private func loadEvents() {

@@ -147,6 +147,7 @@ struct ChargingPage: View {
         let s = monitor.snapshot
         PageScroll {
             PDContractCard()
+            PortsCard()
             LiveVoltageChart()
             VoltageSourcesCard()
             ConsistencyChecksCard()
@@ -245,6 +246,13 @@ struct HistoryPage: View {
                 Spacer()
                 Text("Read every 1 s · stored per 5 s (avg, min, max) · kept 7 days · \(monitor.history.count) windows")
                     .font(.caption).foregroundStyle(.secondary)
+                Menu {
+                    Button("History…") { monitor.exportHistory() }
+                    Button("PD events…") { monitor.exportEvents() }
+                } label: {
+                    Label("Export CSV", systemImage: "square.and.arrow.up")
+                }
+                .fixedSize()
             }
             ForEach(HistoryMetric.allCases) { metric in
                 Card(title: metric.title + " (\(metric.unit))", symbol: symbol(metric)) {

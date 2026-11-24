@@ -17,6 +17,13 @@ struct PowerScopeApp: App {
                 .environment(monitor)
         }
         .defaultSize(width: 1040, height: 760)
+        .commands {
+            CommandGroup(after: .saveItem) {
+                Button("Export History as CSV…") { monitor.exportHistory() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                Button("Export PD Events as CSV…") { monitor.exportEvents() }
+            }
+        }
 
         MenuBarExtra {
             MenuBarPanel()

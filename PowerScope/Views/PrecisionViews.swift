@@ -426,3 +426,93 @@ struct PDProfilesCard: View {
         }
     }
 }
+
+// MARK: - Ports
+
+struct PortsCard: View {
+    @Environment(BatteryMonitor.self) private var monitor
+
+    var body: some View {
+        let pd = monitor.snapshot.pd
+        Card(title: "Ports", symbol: "rectangle.connected.to.line.below") {
+            Text("Physical ports").font(.subheadline.weight(.semibold))
+            if pd.physicalPorts.isEmpty {
+                Text("No power inputs reported.").foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(pd.physicalPorts) { port in
+                        physicalRow(port, contract: pd.contract)
+                        Divider().opacity(0.5)
+                    }
+                }
+            }
+
+            Text("Port controllers").font(.subheadline.weight(.semibold)).padding(.top, 6)
+            if pd.ports.isEmpty {
+                Text("No USB PD port controller data.").foregroundStyle(.secondary)
+            } else {
+                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                    GridRow {
+                        Text("Controller"); Text("Source offers"); Text("EPR"); Text("Request (RDO)"); Text("Budget")
+                    }
+                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Divider()
+                    ForEach(pd.ports) { port in
+                        let active = port.index == pd.activePort?.index
+                        GridRow {
+                            Label("\(port.index)", systemImage: active ? "bolt.fill" : "circle")
+                                .foregroundStyle(active ? Palette.input : Color.secondary)
+                            Text(offerSummary(port.pdos))
+                            Text(port.pdos.contains { $0.position >= 8 } ? "Yes" : "No")
+                            Text(port.rdoContract.map { "PDO \($0.pdo.position) · \(volts($0.voltage)) \(amps($0.current))" } ?? "—")
+                            Text(port.maxPower.map { "\($0 / 1000) W" } ?? "—")
+                        }
+                        .font(.callout.monospacedDigit())
+                    }
+                }
+            }
+            Text("macOS does not say which controller drives which physical port, and a port can keep reporting a previous charger until it is replaced. The active controller is the one the contract resolver picked.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func physicalRow(_ port: PhysicalPort, contract: PDContract?) -> some View {
+        // macOS keeps the "[*]" mark and option of a previous charger on a port until it is
+        // replaced, so a port only counts as in use when its option matches the contract.
+        let marked = port.inUse
+        let matches = marked?.winning.map { w in contract.map { abs($0.voltage - w.voltage) <= 100 } ?? false } ?? false
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: port.isMagSafe ? "magsafe.batterypack" : "cable.connector")
+                .foregroundStyle(matches ? Palette.input : Color.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(port.displayName).font(.callout.weight(.medium))
+                if let source = marked, let w = source.winning, matches {
+                    Text("In use · \(source.name) \(volts(w.voltage)) \(amps(w.current)) (\(w.power / 1000) W)")
+                        .font(.caption).foregroundStyle(Palette.input)
+                } else if let source = marked, let w = source.winning {
+                    Text("Stale · \(source.name) \(volts(w.voltage)) \(amps(w.current)), does not match the current contract (likely a previous charger)")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let w = port.sources.compactMap(\.winning).first {
+                    Text("Last reported · \(w.name) \(volts(w.voltage)) \(amps(w.current))")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Nothing reported").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if let best = port.sources.max(by: { $0.maxPower < $1.maxPower }), best.maxPower > 0 {
+                Text("Offers up to \(best.maxPower / 1000) W · \(best.options.map { Format.number(Double($0.voltage) / 1000, digits: 0) }.joined(separator: " / ")) V")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func offerSummary(_ pdos: [DecodedPDO]) -> String {
+        guard !pdos.isEmpty else { return "—" }
+        let maxW = Int(pdos.map(\.powerW).max() ?? 0)
+        return "\(pdos.count) PDOs · up to \(maxW) W"
+    }
+}

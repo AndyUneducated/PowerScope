@@ -60,9 +60,44 @@ struct ContractCrossCheck: Identifiable {
     let status: CheckStatus
 }
 
+/// A physical power input (a USB-C or MagSafe port) and the sources macOS reports on it.
+struct PhysicalPort: Identifiable {
+    let name: String          // e.g. "Port-USB-C@1", "Port-MagSafe 3@1"
+    let sources: [PortSource]
+    var id: String { name }
+
+    var isMagSafe: Bool { name.localizedCaseInsensitiveContains("MagSafe") }
+
+    /// "USB-C 1", "MagSafe 3 · 1"
+    var displayName: String {
+        let base = name.replacingOccurrences(of: "Port-", with: "")
+        let parts = base.split(separator: "@")
+        guard parts.count == 2 else { return base }
+        return "\(parts[0].replacingOccurrences(of: "-", with: " ")) · port \(parts[1])"
+    }
+
+    var inUse: PortSource? { sources.first(where: \.inUse) }
+}
+
+struct PortSource: Identifiable {
+    struct Option: Hashable {
+        let voltage: Int   // mV
+        let current: Int   // mA
+        let power: Int     // mW
+    }
+    let name: String       // "USB-PD", "Brick ID", "TypeC"
+    let inUse: Bool
+    let options: [Option]
+    let winning: ElectedSource?
+    var id: String { name }
+
+    var maxPower: Int { options.map(\.power).max() ?? winning?.power ?? 0 }
+}
+
 struct PDState {
     var ports: [PDPortState] = []
     var elected: [ElectedSource] = []
+    var physicalPorts: [PhysicalPort] = []
     /// The power manager's selected source profile (`UsbHvcHvcIndex`, 0-based);
     /// nil when it reports 255 (no PD profile in use).
     var selectedIndex: Int?
@@ -99,7 +134,10 @@ struct PDState {
             state.selectedIndex = index == 255 ? nil : index
         }
         state.pmuVoltage = int((battery["PowerDistribution"] as? [String: Any])?["IPDInputVoltage"])
-        state.elected = electedSources()
+        state.physicalPorts = physicalPorts()
+        // Sources macOS currently uses first, then the last values other ports reported.
+        let sources = state.physicalPorts.flatMap(\.sources)
+        state.elected = (sources.filter(\.inUse) + sources.filter { !$0.inUse }).compactMap(\.winning)
         return state
     }
 
@@ -145,41 +183,54 @@ struct PDState {
     /// Walks every port's "Power In" node and reads its power-source children.
     /// Sources are often not registered (so IOServiceGetMatchingServices misses them);
     /// the registry name carries "[*]" for the source macOS currently uses.
-    private static func electedSources() -> [ElectedSource] {
+    /// Walks every physical port's "Power In" node and reads its power-source children.
+    /// Sources are often not registered (so IOServiceGetMatchingServices misses them);
+    /// the registry name carries "[*]" for the source macOS currently uses.
+    private static func physicalPorts() -> [PhysicalPort] {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOPortFeaturePowerIn"), &iterator) == KERN_SUCCESS else { return [] }
         defer { IOObjectRelease(iterator) }
-        var active: [ElectedSource] = []
-        var others: [ElectedSource] = []
+        var ports: [PhysicalPort] = []
         while case let powerIn = IOIteratorNext(iterator), powerIn != 0 {
             defer { IOObjectRelease(powerIn) }
             let portName = parentName(of: powerIn)
+            var sources: [PortSource] = []
             var children: io_iterator_t = 0
-            guard IORegistryEntryGetChildIterator(powerIn, kIOServicePlane, &children) == KERN_SUCCESS else { continue }
-            defer { IOObjectRelease(children) }
-            while case let child = IOIteratorNext(children), child != 0 {
-                defer { IOObjectRelease(child) }
-                guard IOObjectConformsTo(child, "IOPortFeaturePowerSource") != 0 else { continue }
-                var props: Unmanaged<CFMutableDictionary>?
-                guard IORegistryEntryCreateCFProperties(child, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-                      let dict = props?.takeRetainedValue() as? [String: Any],
-                      let winning = dict["WinningPowerSourceOption"] as? [String: Any],
-                      let voltage = int(winning["Voltage (mV)"]) else { continue }
-                let registryName = name(of: child)
-                let sourceName = dict["PowerSourceName"] as? String
-                    ?? registryName.replacingOccurrences(of: " [*]", with: "")
-                let source = ElectedSource(
-                    name: sourceName,
-                    path: dict["Description"] as? String ?? "\(portName)/Power In/\(sourceName)",
-                    portNumber: int(dict["ParentPortNumber"]) ?? portNumber(from: portName),
-                    voltage: voltage,
-                    current: int(winning["Max Current (mA)"]) ?? 0,
-                    power: int(winning["Max Power (mW)"]) ?? 0
-                )
-                if registryName.contains("[*]") { active.append(source) } else { others.append(source) }
+            if IORegistryEntryGetChildIterator(powerIn, kIOServicePlane, &children) == KERN_SUCCESS {
+                while case let child = IOIteratorNext(children), child != 0 {
+                    defer { IOObjectRelease(child) }
+                    guard IOObjectConformsTo(child, "IOPortFeaturePowerSource") != 0 else { continue }
+                    var props: Unmanaged<CFMutableDictionary>?
+                    guard IORegistryEntryCreateCFProperties(child, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS,
+                          let dict = props?.takeRetainedValue() as? [String: Any] else { continue }
+                    let registryName = name(of: child)
+                    let sourceName = dict["PowerSourceName"] as? String
+                        ?? registryName.replacingOccurrences(of: " [*]", with: "")
+                    // Published as a set, not an array.
+                    let rawOptions = (dict["PowerSourceOptions"] as? [[String: Any]])
+                        ?? ((dict["PowerSourceOptions"] as? NSSet)?.allObjects as? [[String: Any]]) ?? []
+                    let options = rawOptions.compactMap(option)
+                    var winning: ElectedSource?
+                    if let w = dict["WinningPowerSourceOption"] as? [String: Any], let o = option(w) {
+                        winning = ElectedSource(
+                            name: sourceName,
+                            path: dict["Description"] as? String ?? "\(portName)/Power In/\(sourceName)",
+                            portNumber: int(dict["ParentPortNumber"]) ?? portNumber(from: portName),
+                            voltage: o.voltage, current: o.current, power: o.power)
+                    }
+                    sources.append(PortSource(name: sourceName, inUse: registryName.contains("[*]"),
+                                              options: options.sorted { $0.voltage < $1.voltage }, winning: winning))
+                }
             }
+            ports.append(PhysicalPort(name: portName, sources: sources))
         }
-        return active + others
+        return ports.sorted { $0.name < $1.name }
+    }
+
+    private static func option(_ dict: [String: Any]) -> PortSource.Option? {
+        guard let voltage = int(dict["Voltage (mV)"]) else { return nil }
+        return PortSource.Option(voltage: voltage, current: int(dict["Max Current (mA)"]) ?? 0,
+                                 power: int(dict["Max Power (mW)"]) ?? 0)
     }
 
     private static func name(of entry: io_registry_entry_t) -> String {
