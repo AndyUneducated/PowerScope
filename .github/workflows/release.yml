@@ -1,0 +1,61 @@
+name: Release
+
+# Push a tag such as v1.0.0 to build, test and publish a release.
+# Release notes come from docs/releases/<tag>.md when that file exists.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, for example v1.0.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Select the latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Check the tag matches the app version
+        run: |
+          version=$(xcodebuild -project PowerScope.xcodeproj -scheme PowerScope -showBuildSettings -configuration Release \
+            | awk -F' = ' '/ MARKETING_VERSION /{print $2; exit}')
+          echo "App version: $version, tag: $TAG"
+          test "v$version" = "$TAG"
+
+      - name: Run tests
+        run: |
+          set -o pipefail
+          xcodebuild test -project PowerScope.xcodeproj -scheme PowerScope -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData | grep -E "Test run|✘|error:|TEST (SUCCEEDED|FAILED)"
+
+      - name: Build release app
+        run: |
+          set -o pipefail
+          xcodebuild -project PowerScope.xcodeproj -scheme PowerScope -configuration Release \
+            -derivedDataPath build/DerivedData build | grep -E "error:|BUILD"
+          ditto -c -k --keepParent build/DerivedData/Build/Products/Release/PowerScope.app "PowerScope-$TAG.zip"
+          shasum -a 256 "PowerScope-$TAG.zip" > "PowerScope-$TAG.zip.sha256"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: PowerScope ${{ env.TAG }}
+          body_path: docs/releases/${{ env.TAG }}.md
+          files: |
+            PowerScope-${{ env.TAG }}.zip
+            PowerScope-${{ env.TAG }}.zip.sha256
