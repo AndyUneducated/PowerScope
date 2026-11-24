@@ -194,3 +194,67 @@ extension BatterySnapshot {
         return line
     }
 }
+
+/// A card whose body can be collapsed. The open/closed state is remembered per `id` across
+/// launches. A collapsed card still shows a one-line summary in its header, so a problem
+/// stays visible, and it does not build its content at all.
+struct CollapsibleCard<Content: View>: View {
+    let title: String
+    let symbol: String
+    var summary: String?
+    var summaryTone: Tone = .neutral
+    @ViewBuilder var content: () -> Content
+    @AppStorage private var expanded: Bool
+
+    init(id: String, title: String, symbol: String, summary: String? = nil, summaryTone: Tone = .neutral,
+         expandedByDefault: Bool = false, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.symbol = symbol
+        self.summary = summary
+        self.summaryTone = summaryTone
+        self.content = content
+        _expanded = AppStorage(wrappedValue: expandedByDefault, "section.\(id).expanded")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Label(title, systemImage: symbol)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 12)
+                    if let summary {
+                        Text(summary)
+                            .font(.callout)
+                            .foregroundStyle(summaryTone.isNeutral ? Color.secondary : summaryTone.color)
+                            .lineLimit(1)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(expanded ? "Collapse" : "Expand")
+
+            if expanded {
+                content()
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06))
+        )
+    }
+}

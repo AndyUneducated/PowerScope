@@ -3,11 +3,11 @@ import SwiftUI
 
 // MARK: - Shared helpers
 
-private func volts(_ mV: Int?, digits: Int = 2) -> String {
+func volts(_ mV: Int?, digits: Int = 2) -> String {
     Format.number(mV.map { Double($0) / 1000 }, digits: digits, unit: "V")
 }
 
-private func amps(_ mA: Int?, digits: Int = 2) -> String {
+func amps(_ mA: Int?, digits: Int = 2) -> String {
     Format.number(mA.map { Double($0) / 1000 }, digits: digits, unit: "A")
 }
 
@@ -17,79 +17,6 @@ extension CheckStatus {
         case .match: Tone.neutral.color
         case .mismatch: Tone.attention.color
         case .unavailable: .secondary
-        }
-    }
-}
-
-// MARK: - PD contract
-
-struct PDContractCard: View {
-    @Environment(BatteryMonitor.self) private var monitor
-
-    var body: some View {
-        let s = monitor.snapshot
-        Card(title: "PD Contract", symbol: "bolt.badge.checkmark") {
-            if let contract = s.pd.contract, let port = s.pd.activePort {
-                HStack(alignment: .firstTextBaseline, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(volts(contract.voltage))
-                            .font(.system(size: 40, weight: .bold, design: .rounded)).monospacedDigit()
-                        Text("Negotiated voltage").font(.caption).foregroundStyle(.secondary)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(contract.current != nil ? amps(contract.current) : "≤ " + amps(contract.currentLimit))
-                            .font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text(contract.current != nil ? "Negotiated current" : "Current limit (PDO)")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(Format.number(contract.powerW, digits: 1, unit: "W"))
-                            .font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text(contract.current != nil ? "Contract power" : "Max power").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-                Text(basisText(contract, port: port))
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                if contract.rdo?.capabilityMismatch == true {
-                    Label("Capability mismatch: the Mac wants more power than this source offers.", systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(Tone.attention.color)
-                }
-            } else {
-                Text(s.externalConnected ? "No PD profile in use right now (non-PD source, or the link is re-attaching at 5 V)." : "Not connected to power.")
-                    .foregroundStyle(.secondary)
-            }
-            Divider()
-            Text("Cross-check").font(.subheadline.weight(.semibold))
-            VStack(spacing: 0) {
-                ForEach(s.contractCrossChecks) { check in
-                    HStack(alignment: .firstTextBaseline) {
-                        Image(systemName: check.status.symbol).foregroundStyle(check.status.color)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(check.source)
-                            Text(check.detail).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text("\(volts(check.voltage)) · \(amps(check.current))").monospacedDigit()
-                    }
-                    .font(.callout)
-                    .padding(.vertical, 4)
-                }
-            }
-        }
-    }
-
-    private func basisText(_ c: PDContract, port: PDPortState) -> String {
-        let pdo = "PDO \(c.pdo.position) (\(c.pdo.kind.rawValue), \(Format.hex(Int(c.pdo.raw))))"
-        switch c.basis {
-        case .confirmed:
-            return "\(pdo) on port controller \(port.index). Selected by the power manager and confirmed by the port controller's RDO \(Format.hex(Int(port.rawRDO)))."
-        case .powerManager:
-            return "\(pdo) on port controller \(port.index), selected by the power manager. The port controller's RDO was not refreshed for this contract, so the operating current is unknown and the PDO limit is shown."
-        case .pmuSetpoint:
-            return "\(pdo) on port controller \(port.index), matched to the PMU input setpoint. The power manager published no selection, so this is inferred from the voltage."
-        case .rdoOnly:
-            return "\(pdo) on port controller \(port.index), decoded from the RDO \(Format.hex(Int(port.rawRDO))). The power manager publishes no selection to confirm it."
         }
     }
 }
@@ -160,7 +87,8 @@ struct VoltageSourcesCard: View {
     }
 
     var body: some View {
-        Card(title: "Voltage Sources", symbol: "list.bullet.indent") {
+        CollapsibleCard(id: "voltageSources", title: "Voltage Sources", symbol: "list.bullet.indent",
+                        summary: "\(rows.count) signals") {
             Text("Each value with where it comes from. Setpoints are what was agreed or requested; only measured values reflect the actual voltage.")
                 .font(.caption).foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
@@ -231,7 +159,14 @@ struct ConsistencyChecksCard: View {
     }
 
     var body: some View {
-        Card(title: "Consistency Checks", symbol: "checklist") {
+        let checks = self.checks
+        let warnings = checks.filter { $0.status == .mismatch }.count
+        let passed = checks.filter { $0.status == .match }.count
+        let skipped = checks.count - warnings - passed
+        CollapsibleCard(id: "consistency", title: "Consistency Checks", symbol: "checklist",
+                        summary: warnings > 0 ? "\(warnings) \(warnings == 1 ? "warning" : "warnings") · \(passed) passed"
+                            : "\(passed) passed" + (skipped > 0 ? " · \(skipped) skipped" : ""),
+                        summaryTone: warnings > 0 ? .attention : .neutral) {
             VStack(spacing: 0) {
                 ForEach(checks) { check in
                     HStack(alignment: .firstTextBaseline) {
@@ -309,124 +244,6 @@ struct ConsistencyChecksCard: View {
     }
 }
 
-// MARK: - PD link health and timeline
-
-struct PDLinkCard: View {
-    @Environment(BatteryMonitor.self) private var monitor
-
-    var body: some View {
-        let s = monitor.snapshot
-        Card(title: "PD Link Health", symbol: "cable.connector") {
-            HStack(spacing: 12) {
-                let recent = monitor.problemCount(within: 600), hour = monitor.problemCount(within: 3600)
-                MetricTile(title: "Issues, 10 min", value: "\(recent)", symbol: "exclamationmark.triangle",
-                           level: recent > 0 ? .attention : .normal)
-                MetricTile(title: "Issues, 1 h", value: "\(hour)", symbol: "clock",
-                           level: hour > 0 ? .attention : .normal)
-            }
-            if s.pd.ports.isEmpty {
-                Text("No USB-C port controller data.").foregroundStyle(.secondary)
-            } else {
-                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
-                    GridRow {
-                        Text("Port"); Text("RDO request"); Text("Budget"); Text("Attach"); Text("Hard resets"); Text("Src caps"); Text("Rejects")
-                    }
-                    .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Divider()
-                    ForEach(s.pd.ports) { port in
-                        GridRow {
-                            Text("\(port.index)\(port.index == s.pd.activePort?.index && s.pd.contract != nil ? " (active)" : port.isConnected == false ? " (not connected)" : "")")
-                            Text(port.rdoContract.map { "\(volts($0.voltage)) \(amps($0.current))\(port.isConnected == false ? " (cached)" : "")" } ?? "—")
-                            Text(port.maxPower.map { "\($0 / 1000) W" } ?? "—")
-                            Text("\(port.counters.attach)")
-                            Text("\(port.counters.hardResets)")
-                            Text("\(port.counters.sourceCapabilities)")
-                            Text("\(port.counters.requestRejects + port.counters.psReadyRejects)")
-                        }
-                        .font(.callout.monospacedDigit())
-                    }
-                }
-                Text("Counters are cumulative since the port controller last reset. PowerScope logs their changes every second, so reconnects between samples are not missed.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-
-        Card(title: "PD Timeline", symbol: "list.bullet.rectangle.portrait") {
-            if monitor.events.isEmpty {
-                Text("No PD events yet.").foregroundStyle(.secondary)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(monitor.events.prefix(40)) { event in
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: event.eventKind.symbol)
-                                .foregroundStyle(event.eventKind.isProblem ? Tone.attention.color : Color.secondary)
-                                .frame(width: 18)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(event.count > 1 ? "\(event.eventKind.title) ×\(event.count)" : event.eventKind.title)
-                                    .font(.callout.weight(.medium))
-                                Text(event.port >= 0 ? "Port \(event.port) · \(event.detail)" : event.detail)
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 1) {
-                                Text(timeRange(event)).font(.caption.monospacedDigit())
-                                if let v = event.voltage {
-                                    Text("\(volts(v)) \(amps(event.current))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 5)
-                        Divider().opacity(0.5)
-                    }
-                }
-            }
-        }
-    }
-
-    private func timeRange(_ e: PDEvent) -> String {
-        let style = Date.FormatStyle(date: .omitted, time: .standard)
-        if e.lastDate.timeIntervalSince(e.firstDate) < 1 { return e.firstDate.formatted(style) }
-        return "\(e.firstDate.formatted(style)) – \(e.lastDate.formatted(style))"
-    }
-}
-
-// MARK: - Decoded PDOs
-
-struct PDProfilesCard: View {
-    @Environment(BatteryMonitor.self) private var monitor
-
-    var body: some View {
-        let s = monitor.snapshot
-        if let port = s.pd.activePort, !port.pdos.isEmpty {
-            Card(title: "Source Capabilities (PDOs)", symbol: "list.number") {
-                VStack(spacing: 0) {
-                    ForEach(port.pdos) { pdo in
-                        let active = pdo.position == s.pd.contract?.pdo.position
-                        HStack {
-                            Text("PDO \(pdo.position)").foregroundStyle(.secondary).frame(width: 60, alignment: .leading)
-                            Text(pdo.kind.rawValue).frame(width: 70, alignment: .leading)
-                            Text(pdo.voltageText).frame(width: 110, alignment: .leading)
-                            Text(pdo.maxCurrent.map { amps($0) } ?? "—").frame(width: 70, alignment: .leading)
-                            Text(Format.number(pdo.powerW, digits: 0, unit: "W")).frame(width: 60, alignment: .leading)
-                            Text(Format.hex(Int(pdo.raw))).font(.caption.monospaced()).foregroundStyle(.tertiary)
-                            Spacer()
-                            if active {
-                                Label("Negotiated", systemImage: "checkmark.circle.fill").foregroundStyle(Palette.input)
-                            }
-                        }
-                        .font(.callout.monospacedDigit())
-                        .padding(.vertical, 6).padding(.horizontal, 8)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(active ? Palette.input.opacity(0.12) : .clear))
-                    }
-                }
-                if let flags = port.pdos.first?.flags, !flags.isEmpty {
-                    Text("Source flags: " + flags.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Ports
 
 struct PortsCard: View {
@@ -434,7 +251,9 @@ struct PortsCard: View {
 
     var body: some View {
         let pd = monitor.snapshot.pd
-        Card(title: "Ports", symbol: "rectangle.connected.to.line.below") {
+        CollapsibleCard(id: "ports", title: "Ports", symbol: "rectangle.connected.to.line.below",
+                        summary: pd.physicalPorts.first(where: { $0.inUse != nil }).map { "\($0.displayName) in use" }
+                            ?? (pd.ports.first(where: \.isSupplying).map { "Controller \($0.index) supplying" } ?? "Nothing in use")) {
             Text("Physical ports").font(.subheadline.weight(.semibold))
             if pd.physicalPorts.isEmpty {
                 Text("No power inputs reported.").foregroundStyle(.secondary)

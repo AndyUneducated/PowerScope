@@ -27,6 +27,9 @@ final class BatteryMonitor {
     private(set) var history: [HistoryPoint] = []
     private(set) var live: [LiveReading] = []
     private(set) var events: [PDEvent] = []
+    /// Chip counter values when issues were last cleared, per port controller index.
+    private(set) var counterBaseline: [Int: PDCounters] = [:]
+    private(set) var issuesClearedAt: Date?
 
     @ObservationIgnored private let container: ModelContainer?
     @ObservationIgnored private var window: [BatterySnapshot] = []
@@ -48,6 +51,7 @@ final class BatteryMonitor {
         snapshot = BatteryReader.read()
         loadHistory()
         loadEvents()
+        loadIssueBaseline()
         subscribeToBatteryNotifications()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -171,6 +175,42 @@ final class BatteryMonitor {
             if events.count > 300 { events.removeLast(events.count - 300) }
         }
         try? container?.mainContext.save()
+    }
+
+    // MARK: Clearing issues
+
+    private static let baselineKey = "pd.counterBaseline.v1"
+    private static let clearedAtKey = "pd.issuesClearedAt"
+
+    /// Deletes the PD timeline and resets the issue counts. The chip's own counters cannot be
+    /// reset, so their current values become the baseline the app counts from.
+    func clearIssues() {
+        let now = Date.now
+        if let context = container?.mainContext {
+            try? context.delete(model: PDEvent.self)
+            try? context.save()
+        }
+        events.removeAll()
+        counterBaseline = Dictionary(uniqueKeysWithValues: snapshot.pd.ports.map { ($0.index, $0.counters) })
+        issuesClearedAt = now
+        if let data = try? JSONEncoder().encode(Dictionary(uniqueKeysWithValues: counterBaseline.map { (String($0.key), $0.value) })) {
+            UserDefaults.standard.set(data, forKey: Self.baselineKey)
+        }
+        UserDefaults.standard.set(now, forKey: Self.clearedAtKey)
+        record(DetectedPDEvent(kind: .cleared, port: -1, count: 1, detail: "Timeline and issue counts reset",
+                               voltage: snapshot.pd.contract?.voltage, current: snapshot.pd.contract?.current), at: now)
+    }
+
+    /// A controller's counters since the last clear.
+    func countersSinceClear(_ port: PDPortState) -> PDCounters {
+        port.counters.since(counterBaseline[port.index])
+    }
+
+    private func loadIssueBaseline() {
+        issuesClearedAt = UserDefaults.standard.object(forKey: Self.clearedAtKey) as? Date
+        guard let data = UserDefaults.standard.data(forKey: Self.baselineKey),
+              let stored = try? JSONDecoder().decode([String: PDCounters].self, from: data) else { return }
+        counterBaseline = Dictionary(uniqueKeysWithValues: stored.compactMap { key, value in Int(key).map { ($0, value) } })
     }
 
     /// Total count of link problems (reconnects, resets, rejects, source switches) in the given window.

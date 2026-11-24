@@ -4,7 +4,7 @@ import IOKit
 /// Cumulative link counters kept by the USB-C port controller firmware.
 /// They keep counting between our samples, so their deltas reveal every
 /// reconnect or renegotiation even when polling is too slow to see it.
-nonisolated struct PDCounters: Hashable, Sendable {
+nonisolated struct PDCounters: Hashable, Sendable, Codable {
     var attach = 0
     var detach = 0
     var hardResets = 0
@@ -12,6 +12,23 @@ nonisolated struct PDCounters: Hashable, Sendable {
     var requestRejects = 0
     var psReadyRejects = 0
     var capabilityMismatches = 0
+
+    /// Link problems counted by these counters: re-attaches, hard resets and rejected requests.
+    var problems: Int { attach + hardResets + requestRejects + psReadyRejects }
+
+    /// Counts added since `baseline` was taken. The chip's totals cannot be reset, so clearing
+    /// stores a baseline instead. If the controller itself reset since then (any counter went
+    /// down), everything it now reports is newer than the baseline.
+    func since(_ baseline: PDCounters?) -> PDCounters {
+        guard let b = baseline else { return self }
+        let all: [KeyPath<PDCounters, Int>] = [\.attach, \.detach, \.hardResets, \.sourceCapabilities,
+                                               \.requestRejects, \.psReadyRejects, \.capabilityMismatches]
+        if all.contains(where: { self[keyPath: $0] < b[keyPath: $0] }) { return self }
+        return PDCounters(attach: attach - b.attach, detach: detach - b.detach, hardResets: hardResets - b.hardResets,
+                          sourceCapabilities: sourceCapabilities - b.sourceCapabilities,
+                          requestRejects: requestRejects - b.requestRejects, psReadyRejects: psReadyRejects - b.psReadyRejects,
+                          capabilityMismatches: capabilityMismatches - b.capabilityMismatches)
+    }
 }
 
 nonisolated struct PDPortState: Identifiable, Sendable {

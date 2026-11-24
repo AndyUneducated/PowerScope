@@ -108,7 +108,7 @@ final class PDEvent {
 }
 
 nonisolated enum PDEventKind: String, CaseIterable, Sendable {
-    case started, established, lost, changed, reconnected, renegotiated, hardReset, rejected, sourceSwitched
+    case started, established, lost, changed, reconnected, renegotiated, hardReset, rejected, sourceSwitched, cleared
 
     var title: String {
         switch self {
@@ -121,6 +121,7 @@ nonisolated enum PDEventKind: String, CaseIterable, Sendable {
         case .hardReset: "Hard reset"
         case .rejected: "Request rejected"
         case .sourceSwitched: "macOS switched source"
+        case .cleared: "Issues cleared"
         }
     }
 
@@ -135,6 +136,7 @@ nonisolated enum PDEventKind: String, CaseIterable, Sendable {
         case .hardReset: "exclamationmark.octagon"
         case .rejected: "xmark.octagon"
         case .sourceSwitched: "arrow.left.arrow.right.circle"
+        case .cleared: "eraser"
         }
     }
 
